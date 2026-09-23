@@ -70,3 +70,14 @@ Implemented:
 - task Resume no longer replays the previous attempt's terminal event in the UI
 - Docker image starts the platform (was: interactive bash), with Node for validation and Chromium for the shared browser
 - DEPLOY.md: step-by-step Railway deployment guide
+
+## v0.8 — Correctness for real projects
+
+Implemented:
+- project git operations refuse to touch any repository the workspace is merely inside of (previously they acted on the platform's own checkout)
+- GitHub connection and branch state are persisted (previously lost on page reload)
+- create-branch returns the branch name to the UI (was empty; the UI showed "branch: unknown")
+- Node validation passes `--runInBand` only to Jest (other runners reject it and failed every cycle); npm's default "no test specified" placeholder is not treated as a validator
+- every implementation/repair agent run starts with a fresh step budget (repair cycles previously inherited leftovers)
+- a rejected browser attachment no longer leaves an orphaned queued task
+- project workspaces are keyed by project id (duplicate names can no longer share a folder)

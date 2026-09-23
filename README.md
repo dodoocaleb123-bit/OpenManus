@@ -1,4 +1,4 @@
-# OpenManus Platform v0.7
+# OpenManus Platform v0.8
 
 This build extends the OpenManus runtime with a product/platform layer for autonomous software development.
 
@@ -15,6 +15,7 @@ This build extends the OpenManus runtime with a product/platform layer for auton
 - Persistent event history and SSE streaming.
 - Task resume endpoint and task-history UI.
 - Deployment readiness: login, configurable host/port/data directory, secrets from environment variables, non-blocking startup recovery, reconnecting live task streams. See [DEPLOY.md](DEPLOY.md).
+- Correctness for real projects: safe project git operations, persisted GitHub/branch state, fair repair-cycle step budgets, runner-agnostic Node validation.
 
 ## Run
 

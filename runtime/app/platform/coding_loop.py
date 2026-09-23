@@ -38,10 +38,14 @@ class CodingLoop:
             try:
                 data = json.loads((p / "package.json").read_text(encoding="utf-8"))
                 scripts = data.get("scripts", {})
-                if "test" in scripts:
-                    commands.append(["npm", "test", "--", "--runInBand"])
-                elif "test" in scripts:
-                    commands.append(["npm", "test"])
+                test_script = str(scripts.get("test", ""))
+                is_default_npm_script = "Error: no test specified" in test_script
+                if test_script and not is_default_npm_script:
+                    test_command = ["npm", "test"]
+                    if "jest" in test_script.lower():
+                        # --runInBand is a Jest-only flag; other runners reject it.
+                        test_command += ["--", "--runInBand"]
+                    commands.append(test_command)
                 if "build" in scripts:
                     commands.append(["npm", "run", "build"])
             except Exception:

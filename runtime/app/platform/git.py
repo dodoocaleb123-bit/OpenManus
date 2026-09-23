@@ -46,8 +46,19 @@ class GitWorkspace:
                     pass
 
     async def is_repo(self) -> bool:
-        out = await self._run("rev-parse", "--is-inside-work-tree", check=False)
-        return out == "true"
+        """True only when the workspace itself is the root of a git repository.
+
+        Being *inside* some other repository (e.g. the platform's own checkout)
+        must not count: project git operations would otherwise modify it.
+        """
+        out = await self._run("rev-parse", "--show-toplevel", check=False)
+        return bool(out) and Path(out).resolve() == self.path
+
+    async def _require_own_repo(self) -> None:
+        if not await self.is_repo():
+            raise GitError(
+                "Project workspace is not a git repository (connect a GitHub repository first)"
+            )
 
     async def clone(self, remote: str, branch: str | None = None) -> None:
         if any(self.path.iterdir()):
@@ -84,23 +95,29 @@ class GitWorkspace:
                     pass
 
     async def current_branch(self) -> str:
+        await self._require_own_repo()
         return await self._run("branch", "--show-current")
 
     async def create_branch(self, name: str) -> str:
+        await self._require_own_repo()
         if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", name) or name.startswith("/") or name.endswith("/"):
             raise GitError("Invalid branch name")
-        return await self._run("switch", "-c", name)
+        await self._run("switch", "-c", name)
+        return name
 
     async def status(self) -> dict:
+        await self._require_own_repo()
         branch = await self.current_branch()
         porcelain = await self._run("status", "--porcelain=v1", "-b")
         diff = await self._run("diff", "--stat", check=False)
         return {"branch": branch, "status": porcelain, "diff_stat": diff}
 
     async def diff(self) -> str:
+        await self._require_own_repo()
         return await self._run("diff", check=False)
 
     async def commit(self, message: str) -> str:
+        await self._require_own_repo()
         message = message.strip()
         if not message:
             raise GitError("Commit message is required")
@@ -108,10 +125,12 @@ class GitWorkspace:
         return await self._run("commit", "-m", message)
 
     async def push(self, branch: str | None = None) -> str:
+        await self._require_own_repo()
         branch = branch or await self.current_branch()
         return await self._run("push", "-u", "origin", branch)
 
     async def remote_url(self) -> str:
+        await self._require_own_repo()
         return await self._run("remote", "get-url", "origin")
 
 

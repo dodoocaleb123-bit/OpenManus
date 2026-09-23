@@ -148,6 +148,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             project.repository = f"{body.owner}/{body.repo}"
             project.branch = await git.current_branch()
             project.git_ready = True
+            store.update_project(project)  # persist the connection across reloads
             return {"project": project, "git": await git.status()}
         except (GitError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -174,8 +175,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         try:
             git = GitWorkspace(project.workspace)
             branch = await git.create_branch(body.name)
-            project.branch = body.name
-            return {"branch": branch}
+            project.branch = branch
+            store.update_project(project)  # persist the branch across reloads
+            return {"branch": branch, "project": project}
         except GitError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -217,12 +219,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.post("/tasks")
     async def create_task(body: TaskCreate):
         try:
-            task = store.create_task(body.project_id, body.prompt.strip())
+            # Validate the browser attachment first so a rejected request does
+            # not leave an orphaned task behind.
             if body.browser_session_id:
                 # The browser must belong to the same project; cross-project attachment is forbidden.
-                session = getattr(orchestrator, "browsers", None).get(body.browser_session_id) if getattr(orchestrator, "browsers", None) else None
+                browsers = getattr(orchestrator, "browsers", None)
+                session = browsers.get(body.browser_session_id) if browsers else None
                 if session is None or session.project_id != body.project_id:
                     raise ValueError("Browser session does not belong to this project")
+            task = store.create_task(body.project_id, body.prompt.strip())
+            if body.browser_session_id:
                 task.browser_session_id = body.browser_session_id
             await store.save_task(task)
         except KeyError as exc:

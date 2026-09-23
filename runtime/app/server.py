@@ -78,7 +78,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         yield
         await browsers.close_all()
 
-    application = FastAPI(title="OpenManus Platform", version="0.7.0", lifespan=lifespan)
+    application = FastAPI(title="OpenManus Platform", version="0.8.0", lifespan=lifespan)
     application.include_router(build_router(store, orchestrator))
     application.include_router(build_browser_router(store, browsers))
     application.mount("/static", StaticFiles(directory=WEB), name="static")
