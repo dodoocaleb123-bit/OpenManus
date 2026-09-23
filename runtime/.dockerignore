@@ -1,0 +1,12 @@
+# Keep runtime images and builds small and reproducible
+workspace/
+logs/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+*.db
+*.sqlite3
+.env

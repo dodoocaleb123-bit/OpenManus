@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.utils.env import scrubbed_env
+
 
 class ValidationResult:
     def __init__(self, ok: bool, command: str, output: str):
@@ -60,7 +62,7 @@ class CodingLoop:
             cwd=self.workspace,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=os.environ.copy(),
+            env=scrubbed_env(),
         )
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)

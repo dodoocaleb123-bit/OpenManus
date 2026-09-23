@@ -1,8 +1,9 @@
 import json
+import os
 import threading
 import tomllib
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,7 +14,42 @@ def get_project_root() -> Path:
 
 
 PROJECT_ROOT = get_project_root()
-WORKSPACE_ROOT = PROJECT_ROOT / "workspace"
+# Deployments can relocate durable data (SQLite store + project workspaces),
+# e.g. to a mounted persistent volume, with PLATFORM_DATA_DIR.
+WORKSPACE_ROOT = Path(
+    os.environ.get("PLATFORM_DATA_DIR") or (PROJECT_ROOT / "workspace")
+)
+
+_ENV_FIELD_CASTERS = {
+    "model": str,
+    "base_url": str,
+    "api_key": str,
+    "api_type": str,
+    "api_version": str,
+    "max_tokens": int,
+    "max_input_tokens": int,
+    "temperature": float,
+}
+
+
+def _env_overrides(prefix: str) -> Dict[str, Any]:
+    """Collect environment overrides such as OPENMANUS_LLM_* or OPENMANUS_VISION_*.
+
+    Environment variables win over values from config.toml so deployments can
+    inject secrets without writing them to disk.
+    """
+    values: Dict[str, Any] = {}
+    for field, caster in _ENV_FIELD_CASTERS.items():
+        raw = os.getenv(f"{prefix}{field.upper()}")
+        if raw is None or raw == "":
+            continue
+        try:
+            values[field] = caster(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{prefix}{field.upper()} must be a valid {caster.__name__}"
+            ) from exc
+    return values
 
 
 class LLMSettings(BaseModel):
@@ -106,7 +142,10 @@ class SandboxSettings(BaseModel):
 
 
 class DaytonaSettings(BaseModel):
-    daytona_api_key: str
+    daytona_api_key: str = Field(
+        default="",
+        description="Daytona API key; only required when Daytona sandboxes are used",
+    )
     daytona_server_url: Optional[str] = Field(
         "https://app.daytona.io/api", description=""
     )
@@ -247,6 +286,8 @@ class Config:
             "api_type": base_llm.get("api_type", ""),
             "api_version": base_llm.get("api_version", ""),
         }
+        # Deployment secrets/settings come from the environment and override TOML.
+        default_settings.update(_env_overrides("OPENMANUS_LLM_"))
 
         # handle browser config.
         browser_config = raw_config.get("browser", {})
@@ -325,6 +366,13 @@ class Config:
             "run_flow_config": run_flow_settings,
             "daytona_config": daytona_settings,
         }
+
+        vision_env = _env_overrides("OPENMANUS_VISION_")
+        if vision_env:
+            config_dict["llm"]["vision"] = {
+                **config_dict["llm"].get("vision", default_settings),
+                **vision_env,
+            }
 
         self._config = AppConfig(**config_dict)
 
