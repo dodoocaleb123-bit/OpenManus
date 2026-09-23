@@ -1,0 +1,4 @@
+[submodule "verl"]
+	path = verl
+	url = https://github.com/realtmxi/verl.git
+	branch = main
