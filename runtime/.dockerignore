@@ -1,0 +1,37 @@
+# Never bake secrets or local state into the image
+config/config.toml
+config/mcp.json
+.env
+*.env
+workspace/
+logs/
+
+# VCS / tooling
+.git/
+.github/
+.vscode/
+.pre-commit-config.yaml
+.gitattributes
+
+# Python build artefacts and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Not needed at runtime
+tests/
+examples/
+assets/
+README_ja.md
+README_ko.md
+README_zh.md
+CODE_OF_CONDUCT.md
+BUILD_PLAN.md
+test_*.py
