@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from app.platform.credentials import github_tokens, is_git_auth_failure, redact
+
 
 class GitError(RuntimeError):
     pass
@@ -46,57 +48,167 @@ def valid_branch_name(name: str) -> bool:
     )
 
 
+# Answers git's credential prompts for https://github.com only. Any other host
+# (a redirected remote, an insteadOf rewrite, a proxy) gets nothing. The token
+# is read from the environment of this one subprocess, never from argv/disk.
+ASKPASS_SCRIPT = """#!/bin/sh
+case "$1" in
+  "Username for 'https://github.com'"*) printf '%s\\n' x-access-token ;;
+  "Password for 'https://x-access-token@github.com'"*) printf '%s\\n' "$OPENMANUS_GIT_TOKEN" ;;
+  *) exit 1 ;;
+esac
+"""
+
+# Passed as `git -c` for every network operation that may carry a token: no
+# credential helpers (they could store/leak the token or answer for us), no
+# hooks, and only sane transports.
+AUTH_CONFIG_OVERRIDES: tuple[str, ...] = (
+    "credential.helper=",
+    "core.hooksPath=/dev/null",
+    "core.askPass=",
+    "core.sshCommand=",
+    "core.fsmonitor=false",
+    "protocol.allow=never",
+    "protocol.https.allow=always",
+    "protocol.file.allow=always",
+    "http.extraHeader=",
+)
+
+# Environment variables that must never reach a git subprocess from the
+# platform process: they can inject config, credentials, or helper programs.
+_GIT_ENV_BLOCKLIST_PREFIXES = ("GIT_CONFIG", "GCM_", "GIT_TRACE")
+_GIT_ENV_BLOCKLIST = frozenset({
+    "GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GIT_SSH", "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND", "GIT_EXEC_PATH", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR", "GIT_ALLOW_PROTOCOL", "GIT_PROTOCOL_FROM_USER",
+    "OPENMANUS_GIT_TOKEN",
+})
+
+# Local config keys that make an authenticated push unsafe (they could run
+# programs, redirect the push, or siphon credentials). Matched on the
+# lower-cased key; `*` spans subsections.
+_RISKY_CONFIG_PATTERNS = tuple(re.compile(p) for p in (
+    r"credential\..*",
+    r"core\.(hookspath|sshcommand|askpass|fsmonitor|gitproxy)",
+    r"include\.path", r"includeif\..*",
+    r"url\..*\.(insteadof|pushinsteadof)",
+    r"remote\..*\.(pushurl|receivepack|uploadpack|proxy|vcs)",
+    r"http\..*",
+    r"protocol\..*",
+    r"extensions\.worktreeconfig",
+    r"(push|remote\..*)\.signingkey", r"gpg\..*",
+))
+
+
+def risky_config_entries(config_text: str) -> list[str]:
+    """Risky `key=value` entries from `git config --list` output (values not echoed)."""
+    risky = []
+    for line in config_text.splitlines():
+        key, _, value = line.partition("=")
+        lowered = key.strip().lower()
+        if any(p.fullmatch(lowered) for p in _RISKY_CONFIG_PATTERNS):
+            risky.append(key.strip())
+        elif re.fullmatch(r"remote\..*\.url", lowered) and (
+            "::" in value or value.strip().startswith(("ext:", "fd:", "-"))
+        ):
+            risky.append(key.strip())
+    return risky
+
+
+def credential_free_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for git: no platform secrets, no injected git config/helpers."""
+    from app.utils.env import scrubbed_env
+
+    env = scrubbed_env(base)
+    for key in list(env):
+        if key in _GIT_ENV_BLOCKLIST or key.startswith(_GIT_ENV_BLOCKLIST_PREFIXES):
+            del env[key]
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GCM_INTERACTIVE"] = "never"
+    return env
+
+
 class GitWorkspace:
-    def __init__(self, workspace: str | Path, token: str | None = None):
-        self.token = token or os.getenv("GITHUB_TOKEN")
+    def __init__(
+        self,
+        workspace: str | Path,
+        token: str | None = None,
+        fallback_token: str | None = None,
+    ):
+        self.tokens = github_tokens(token, fallback_token)
         self.path = Path(workspace).resolve()
         self.path.mkdir(parents=True, exist_ok=True)
 
-    @contextmanager
-    def _git_env(self) -> Iterator[dict[str, str]]:
-        """Environment for git subprocesses; supplies the token via GIT_ASKPASS.
+    @property
+    def token(self) -> str | None:
+        return self.tokens[0] if self.tokens else None
 
-        The token never appears in argv, remote URLs or .git/config.
+    @contextmanager
+    def _git_env(self, token: str | None = None) -> Iterator[dict[str, str]]:
+        """Credential-free git environment; with ``token``, adds a github.com-only askpass.
+
+        The token never appears in argv, remote URLs or .git/config, and is only
+        present in the environment of authenticated network commands.
         """
-        env = os.environ.copy()
-        env["GIT_TERMINAL_PROMPT"] = "0"
+        env = credential_free_env()
         askpass = None
-        if self.token:
-            askpass = tempfile.NamedTemporaryFile("w", delete=False, suffix="-git-askpass")
-            askpass.write(
-                "#!/bin/sh\n"
-                'case "$1" in\n'
-                "  Username*) printf '%s\\n' x-access-token ;;\n"
-                "  *) printf '%s\\n' \"$GITHUB_TOKEN\" ;;\n"
-                "esac\n"
-            )
-            askpass.close()
-            os.chmod(askpass.name, 0o700)
-            env["GIT_ASKPASS"] = askpass.name
-            env["GITHUB_TOKEN"] = self.token
+        if token:
+            fd, askpass = tempfile.mkstemp(suffix="-git-askpass")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(ASKPASS_SCRIPT)
+            os.chmod(askpass, 0o700)
+            env["GIT_ASKPASS"] = askpass
+            env["OPENMANUS_GIT_TOKEN"] = token
         try:
             yield env
         finally:
             if askpass:
                 try:
-                    os.unlink(askpass.name)
+                    os.unlink(askpass)
                 except FileNotFoundError:
                     pass
 
-    async def _exec(self, args: list[str], cwd: Path, check: bool = True) -> str:
-        with self._git_env() as env:
+    async def _spawn(self, args: list[str], cwd: Path, token: str | None) -> tuple[int, str, str]:
+        with self._git_env(token) as env:
             proc = await asyncio.create_subprocess_exec(
                 "git", *args, cwd=cwd, env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             out, err = await proc.communicate()
-        stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
-        if check and proc.returncode != 0:
-            message = stderr.strip() or stdout.strip() or f"git exited {proc.returncode}"
-            if self.token:
-                message = message.replace(self.token, "***")
-            raise GitError(message)
+        return (
+            proc.returncode,
+            redact(out.decode(errors="replace"), self.tokens),
+            redact(err.decode(errors="replace"), self.tokens),
+        )
+
+    async def _exec(self, args: list[str], cwd: Path, check: bool = True) -> str:
+        """Local git command: never gets a token."""
+        code, stdout, stderr = await self._spawn(args, cwd, None)
+        if check and code != 0:
+            raise GitError(stderr.strip() or stdout.strip() or f"git exited {code}")
         return stdout.strip()
+
+    async def _exec_authenticated(self, args: list[str], cwd: Path) -> str:
+        """Network git command: GITHUB_TOKEN first, GITHUB_CLASSIC_TOKEN on auth failure.
+
+        Returns stdout+stderr (git reports push/clone progress on stderr).
+        """
+        overrides = [item for pair in (("-c", o) for o in AUTH_CONFIG_OVERRIDES) for item in pair]
+        attempts: list[str | None] = list(self.tokens) or [None]
+        text, code = "", 1
+        for index, token in enumerate(attempts):
+            code, stdout, stderr = await self._spawn(overrides + args, cwd, token)
+            text = (stdout + stderr).strip()
+            if code == 0:
+                return text
+            if index + 1 < len(attempts) and is_git_auth_failure(text):
+                continue
+            break
+        raise GitError(text or f"git exited {code}")
 
     async def _run(self, *args: str, check: bool = True) -> str:
         return await self._exec(list(args), self.path, check)
@@ -165,8 +277,8 @@ class GitWorkspace:
         args = ["clone"]
         if branch:
             args += ["--branch", branch]
-        args += [remote, str(self.path)]
-        await self._exec(args, parent)
+        args += ["--", remote, str(self.path)]
+        await self._exec_authenticated(args, parent)
         await self.ensure_local_excludes()
 
     async def current_branch(self) -> str:
@@ -235,19 +347,32 @@ class GitWorkspace:
         branch = branch or await self.current_branch()
         if not await self.has_commits():
             raise GitError("Nothing to push: make a commit first")
-        # git writes push progress to stderr; return both so callers see the result.
-        with self._git_env() as env:
-            proc = await asyncio.create_subprocess_exec(
-                "git", "push", "-u", "origin", branch, cwd=self.path, env=env,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await proc.communicate()
-        text = (out.decode(errors="replace") + err.decode(errors="replace")).strip()
-        if self.token:
-            text = text.replace(self.token, "***")
-        if proc.returncode != 0:
-            raise GitError(text or f"git push exited {proc.returncode}")
+        await self._assert_safe_for_push()
+        text = await self._exec_authenticated(
+            ["push", "--no-verify", "-u", "origin", branch], self.path
+        )
         return text or f"Pushed {branch}"
+
+    async def _assert_safe_for_push(self) -> None:
+        """Refuse to hand credentials to git if .git/config was tampered with.
+
+        The agent's shell can edit the workspace's .git/config; settings such as
+        credential helpers, hooksPath, insteadOf rewrites or pushurl could run
+        programs or send the token elsewhere.
+        """
+        config = self.path / ".git" / "config"
+        if not config.is_file():
+            raise GitError("Refusing to push: .git/config is missing or not a regular file")
+        listing = await self._exec(
+            ["config", "--file", str(config), "--no-includes", "--list"], self.path, check=False
+        )
+        risky = risky_config_entries(listing)
+        if risky:
+            raise GitError(
+                "Refusing to push: .git/config contains risky settings ("
+                + ", ".join(sorted(set(risky)))
+                + "). Remove them (e.g. `git config --unset <key>`) and try again."
+            )
 
     async def remote_url(self) -> str:
         await self._require_own_repo()

@@ -47,17 +47,50 @@ Other providers are listed [further down](#llm-provider-settings).
 ### 3. Create a GitHub token (optional but recommended)
 
 This lets the platform list your repos, clone them, push branches, open pull
-requests and create new repos.
+requests and create new repos. Pick **one** of the options below.
+
+**Option A: classic token (simplest).**
 
 1. GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic)**
    → **Generate new token (classic)**.
 2. Note: `OpenManus platform`. Expiration: your choice (90 days is sensible).
 3. Scope: tick **`repo`** (that's all).
-4. **Generate token** → copy it (starts with `ghp_`).
+4. **Generate token** → copy it (starts with `ghp_`). Use it as `GITHUB_TOKEN`.
 
-Prefer fine-grained tokens? Grant **Contents: read/write**, **Pull requests:
-read/write**, **Metadata: read**, and **Administration: read/write** only if you
-want the agent to create new repositories (that also needs "All repositories").
+**Option B: fine-grained token (least privilege).**
+
+Grant **Contents: read/write**, **Pull requests: read/write**, **Metadata: read**,
+and **Administration: read/write** only if you want the agent to create new
+repositories (that also needs "All repositories"). Copy it (starts with
+`github_pat_`) and use it as `GITHUB_TOKEN`.
+
+**Option C: both tokens (fine-grained first, classic as fallback).**
+
+Create the fine-grained token from option B **and** the classic token from option A.
+
+- `GITHUB_TOKEN` = the fine-grained token (`github_pat_...`). It is always tried first.
+- `GITHUB_CLASSIC_TOKEN` = the classic token (`ghp_...`). It is used **only** when
+  GitHub refuses the first one: API answers 401/403/404, or git reports an
+  authentication/permission error on clone or push. Everything else (e.g. a
+  rejected non-fast-forward push, a validation error) is not retried.
+
+This is handy when the fine-grained token doesn't cover a repository (an org that
+blocks fine-grained tokens, a repo you forgot to select) without giving up least
+privilege for everything else.
+
+How the platform handles the tokens, whichever option you pick:
+
+- Tokens never appear in command lines, remote URLs, `.git/config` or logs
+  (output is redacted), and are hidden from the agent's shell and Python tools.
+- Git runs in a credential-free environment (no system/global git config, no
+  injected `GIT_CONFIG_*`, no inherited askpass/SSH helpers). Only clone and push
+  receive a token, through a temporary askpass helper that answers **only** for
+  `https://github.com`.
+- Pushes run with credential helpers and hooks disabled (`--no-verify`,
+  `core.hooksPath=/dev/null`), and are refused if the project's `.git/config`
+  contains risky settings (credential helpers, `core.hooksPath`/`sshCommand`/
+  `fsmonitor`, `url.*.insteadOf`, `remote.*.pushurl`, `include.path`, `http.*`,
+  ...). The error names the offending keys so you can `git config --unset` them.
 
 ### 4. Prepare Render
 
@@ -80,6 +113,7 @@ want the agent to create new repositories (that also needs "All repositories").
    | `LLM_BASE_URL` | from step 2 |
    | `LLM_API_KEY` | from step 2 |
    | `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
+   | `GITHUB_CLASSIC_TOKEN` | option C only: the classic fallback token (otherwise leave empty) |
 
 4. Click **Apply** (or **Deploy Blueprint**).
 

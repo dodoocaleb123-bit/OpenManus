@@ -17,6 +17,8 @@ from typing import Mapping
 # Exact names that are always removed.
 SENSITIVE_ENV_VARS: tuple[str, ...] = (
     "GITHUB_TOKEN",
+    "GITHUB_CLASSIC_TOKEN",
+    "OPENMANUS_GIT_TOKEN",
     "GH_TOKEN",
     "GIT_ASKPASS",
     "LLM_API_KEY",
