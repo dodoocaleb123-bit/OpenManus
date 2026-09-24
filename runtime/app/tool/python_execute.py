@@ -1,9 +1,11 @@
 import multiprocessing
+import os
 import sys
 from io import StringIO
 from typing import Dict
 
 from app.tool.base import BaseTool
+from app.utils.env import SENSITIVE_ENV_VARS
 
 
 class PythonExecute(BaseTool):
@@ -24,6 +26,10 @@ class PythonExecute(BaseTool):
 
     def _run_code(self, code: str, result_dict: dict, safe_globals: dict) -> None:
         original_stdout = sys.stdout
+        # Runs in a forked child process: scrub credential variables here so
+        # code executed by the agent cannot read platform secrets.
+        for var in SENSITIVE_ENV_VARS:
+            os.environ.pop(var, None)
         try:
             output_buffer = StringIO()
             sys.stdout = output_buffer

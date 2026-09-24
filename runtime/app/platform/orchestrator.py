@@ -66,6 +66,10 @@ class AgentOrchestrator:
             await self.store.emit(Event(task_id=task.id, type="agent.running", message="Executing autonomous coding workflow"))
             loop = CodingLoop(project.workspace)
             max_cycles = loop.max_repair_cycles
+            # Each agent run gets its full step budget: Manus keeps current_step
+            # between runs, so without this the first repair pass would inherit
+            # the leftovers of the implementation pass.
+            agent.current_step = 0
             result = await agent.run(prompt + "\n\nAUTONOMOUS CODING REQUIREMENT: Inspect the project, implement the requested change, and verify your work. Do not stop merely because files were edited; use available tools to inspect and test the implementation.")
             task.coding_iteration = 1
             task.checkpoint = "implementation_complete"
@@ -92,6 +96,7 @@ class AgentOrchestrator:
                     "Do not just explain the failure; modify the workspace to fix it. Preserve existing working behavior."
                 )
                 await self.store.emit(Event(task_id=task.id, type="coding.repair", message=f"Starting repair cycle {cycle + 1}", data={"cycle": cycle + 1, "failures": failures[-12000:]}))
+                agent.current_step = 0
                 await agent.run(repair_prompt)
                 validation_results = await loop.validate()
 

@@ -4,6 +4,7 @@ from typing import Optional
 
 from app.exceptions import ToolError
 from app.tool.base import BaseTool, CLIResult
+from app.utils.env import scrubbed_env
 
 
 _BASH_DESCRIPTION = """Execute a bash command in the terminal.
@@ -40,6 +41,7 @@ class _BashSession:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=scrubbed_env(),
         )
 
         self._started = True

@@ -1,4 +1,4 @@
-# OpenManus Platform v0.3
+# OpenManus Platform v0.8
 
 This build extends the OpenManus runtime with a product/platform layer for autonomous software development.
 
@@ -14,6 +14,8 @@ This build extends the OpenManus runtime with a product/platform layer for auton
 - Task attempts/checkpoints.
 - Persistent event history and SSE streaming.
 - Task resume endpoint and task-history UI.
+- Deployment readiness: login, configurable host/port/data directory, secrets from environment variables, non-blocking startup recovery, reconnecting live task streams. See [DEPLOY.md](DEPLOY.md).
+- Correctness for real projects: safe project git operations, persisted GitHub/branch state, fair repair-cycle step budgets, runner-agnostic Node validation.
 
 ## Run
 
@@ -22,9 +24,13 @@ cd runtime
 python run_platform.py
 ```
 
-Open `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:8000`. The server binds `0.0.0.0` and honours `HOST` and `PORT`.
 
-The GitHub integration reads `GITHUB_TOKEN` from the server environment. Real agent execution still requires the normal OpenManus model configuration and dependencies.
+The GitHub integration reads `GITHUB_TOKEN` from the server environment (never visible to agent-executed code). Real agent execution still requires the normal OpenManus model configuration and dependencies — or just the `OPENMANUS_LLM_*` environment variables described in [DEPLOY.md](DEPLOY.md).
+
+## Deploy
+
+See [DEPLOY.md](DEPLOY.md) for deploying to Railway (or any Docker host) behind a login, with persistent storage.
 
 ## Architecture
 

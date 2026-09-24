@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
+from uuid import uuid4
 
 from app.platform.models import Event, Project, Task, TaskStatus
 
@@ -142,8 +143,11 @@ class PlatformStore:
         name = name.strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}", name):
             raise ValueError("Project name may contain letters, numbers, spaces, underscores, dots and hyphens")
-        project = Project(name=name, repository=repository, branch=branch,
-                          workspace=str(self.root / "projects" / name))
+        # Workspaces are keyed by the unique project id so duplicate (or
+        # case-variant) project names can never share a folder.
+        project_id = uuid4().hex[:12]
+        project = Project(id=project_id, name=name, repository=repository, branch=branch,
+                          workspace=str(self.root / "projects" / project_id))
         Path(project.workspace).mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute(

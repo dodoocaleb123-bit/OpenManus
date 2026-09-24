@@ -2,15 +2,66 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.platform.github import GitHubClient
 from app.platform.git import GitError, GitWorkspace, github_remote
+from app.platform.models import TaskStatus
 from app.platform.orchestrator import AgentOrchestrator
 from app.platform.store import PlatformStore
+
+TERMINAL_EVENT_TYPES = {"task.succeeded", "task.failed"}
+
+# Keep well under Railway's 15-minute streaming cap; clients reconnect with
+# Last-Event-ID and resume where they left off.
+SSE_HEARTBEAT_INTERVAL = 25.0
+SSE_MAX_LIFETIME = 840.0
+SSE_POLL_INTERVAL = 1.0
+
+
+async def sse_event_stream(
+    store: PlatformStore,
+    task_id: str,
+    after_id: str | None = None,
+    heartbeat_interval: float = SSE_HEARTBEAT_INTERVAL,
+    max_lifetime: float = SSE_MAX_LIFETIME,
+    poll_interval: float = SSE_POLL_INTERVAL,
+):
+    """Yield task events as Server-Sent Event frames.
+
+    ``after_id`` implements Last-Event-ID resume: events up to and including
+    that id are skipped, so an auto-reconnecting EventSource sees no duplicates.
+    Idle connections get ``: ping`` comments so proxies do not close them.
+    """
+    started = time.monotonic()
+    last_beat = started
+    index = 0
+    if after_id:
+        past = await store.list_events(task_id)
+        index = next((i + 1 for i, e in enumerate(past) if e.id == after_id), 0)
+    while True:
+        events = await store.list_events(task_id)
+        while index < len(events):
+            event = events[index]
+            index += 1
+            yield f"id: {event.id}\ndata: {json.dumps(event.model_dump(mode='json'))}\n\n"
+            last_beat = time.monotonic()
+            if event.type in TERMINAL_EVENT_TYPES:
+                return
+        task = store.get_task(task_id)
+        if task is None or task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            return
+        now = time.monotonic()
+        if now - started >= max_lifetime:
+            return
+        if now - last_beat >= heartbeat_interval:
+            yield ": ping\n\n"
+            last_beat = now
+        await asyncio.sleep(poll_interval)
 
 
 class ProjectCreate(BaseModel):
@@ -97,6 +148,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             project.repository = f"{body.owner}/{body.repo}"
             project.branch = await git.current_branch()
             project.git_ready = True
+            store.update_project(project)  # persist the connection across reloads
             return {"project": project, "git": await git.status()}
         except (GitError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -123,8 +175,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         try:
             git = GitWorkspace(project.workspace)
             branch = await git.create_branch(body.name)
-            project.branch = body.name
-            return {"branch": branch}
+            project.branch = branch
+            store.update_project(project)  # persist the branch across reloads
+            return {"branch": branch, "project": project}
         except GitError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -166,12 +219,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.post("/tasks")
     async def create_task(body: TaskCreate):
         try:
-            task = store.create_task(body.project_id, body.prompt.strip())
+            # Validate the browser attachment first so a rejected request does
+            # not leave an orphaned task behind.
             if body.browser_session_id:
                 # The browser must belong to the same project; cross-project attachment is forbidden.
-                session = getattr(orchestrator, "browsers", None).get(body.browser_session_id) if getattr(orchestrator, "browsers", None) else None
+                browsers = getattr(orchestrator, "browsers", None)
+                session = browsers.get(body.browser_session_id) if browsers else None
                 if session is None or session.project_id != body.project_id:
                     raise ValueError("Browser session does not belong to this project")
+            task = store.create_task(body.project_id, body.prompt.strip())
+            if body.browser_session_id:
                 task.browser_session_id = body.browser_session_id
             await store.save_task(task)
         except KeyError as exc:
@@ -195,14 +252,15 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         return task
 
     @router.get("/tasks/{task_id}/events")
-    async def task_events(task_id: str):
+    async def task_events(task_id: str, request: Request, last_event_id: str | None = None):
         if not store.get_task(task_id):
             raise HTTPException(status_code=404, detail="Task not found")
-
-        async def event_stream():
-            async for event in store.stream_events(task_id):
-                yield f"data: {json.dumps(event.model_dump(mode='json'))}\n\n"
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        # Browsers send Last-Event-ID automatically when EventSource reconnects.
+        after_id = request.headers.get("last-event-id") or last_event_id
+        return StreamingResponse(
+            sse_event_stream(store, task_id, after_id=after_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return router
