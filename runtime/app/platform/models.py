@@ -17,6 +17,11 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+TERMINAL_STATUSES = frozenset({TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED})
+TERMINAL_EVENT_TYPES = frozenset({"task.succeeded", "task.failed", "task.cancelled"})
 
 
 class Project(BaseModel):
@@ -44,6 +49,8 @@ class Task(BaseModel):
     browser_session_id: Optional[str] = None
     coding_iteration: int = 0
     validation: Optional[dict[str, Any]] = None
+    # Live-only (not persisted): question the agent is waiting on the user to answer.
+    pending_question: Optional[str] = None
 
 
 class BrowserSessionInfo(BaseModel):

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
-from app.platform.models import Event, Project, Task, TaskStatus
+from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 
 
 class PlatformStore:
@@ -142,8 +142,10 @@ class PlatformStore:
         name = name.strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}", name):
             raise ValueError("Project name may contain letters, numbers, spaces, underscores, dots and hyphens")
-        project = Project(name=name, repository=repository, branch=branch,
-                          workspace=str(self.root / "projects" / name))
+        # Workspaces are keyed by the unique project id, so duplicate or
+        # case-variant project names can never share (or clobber) a folder.
+        project = Project(name=name, repository=repository, branch=branch, workspace="")
+        project.workspace = str(self.root / "projects" / project.id)
         Path(project.workspace).mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute(
@@ -191,16 +193,25 @@ class PlatformStore:
             while index < len(rows):
                 event = self._event(rows[index]); index += 1
                 yield event
-                if event.type in {"task.succeeded", "task.failed"}:
+                if event.type in TERMINAL_EVENT_TYPES:
                     return
             task = self.get_task(task_id)
-            if task and task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            if task and task.status in TERMINAL_STATUSES:
                 return
             async with self._conditions[task_id]:
                 try:
                     await asyncio.wait_for(self._conditions[task_id].wait(), timeout=5)
                 except asyncio.TimeoutError:
                     pass
+
+    async def wait_for_event(self, task_id: str, timeout: float) -> None:
+        """Block until a new event is emitted for ``task_id`` or ``timeout`` elapses."""
+        condition = self._conditions[task_id]
+        async with condition:
+            try:
+                await asyncio.wait_for(condition.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
 
     async def recover_interrupted(self) -> list[Task]:
         """Convert tasks left RUNNING by a process crash back to QUEUED."""

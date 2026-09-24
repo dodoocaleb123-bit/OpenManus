@@ -10,21 +10,23 @@ services:
     runtime: docker
     # Closest Render region to West Africa. Alternatives: oregon, ohio, virginia, singapore.
     region: frankfurt
-    # Smallest plan that supports a persistent disk (0.5 CPU / 512 MB, ~$7/mo).
-    # If you use the shared browser (headless Chromium) heavily, use 1c-2g instead.
-    plan: 0.5c-512mb
+    # 1 CPU / 2 GB RAM ($25/mo). The agent runs npm installs, builds, test suites
+    # and headless Chromium inside this container; 512 MB (0.5c-512mb, $7/mo) gets
+    # OOM-killed mid-task on real projects. Heavier projects: 2c-4g ($85/mo).
+    plan: 1c-2g
     dockerfilePath: ./runtime/Dockerfile
     dockerContext: ./runtime
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     # Give in-flight agent tasks a moment to checkpoint on redeploys.
     maxShutdownDelaySeconds: 60
-    # SQLite database + per-project git checkouts. Without this, all projects and
-    # task history are wiped on every deploy/restart. Size can grow later, not shrink.
+    # SQLite database + per-project workspaces (incl. node_modules / .venv). Without
+    # this, all projects and task history are wiped on every deploy/restart.
+    # $0.25/GB/month. Size can grow later, never shrink.
     disk:
       name: openmanus-workspace
       mountPath: /app/OpenManus/workspace
-      sizeGB: 5
+      sizeGB: 10
     envVars:
       # ---- LLM (required for agent execution; see DEPLOY.md for provider values) ----
       - key: LLM_MODEL
@@ -43,7 +45,23 @@ services:
       # - key: LLM_API_VERSION
       #   value: 2024-08-01-preview
 
-      # ---- GitHub integration (repo discovery, clone, push). Needs `repo` scope. ----
+      # Set to true/false if your model's vision support is misdetected (screenshots).
+      # - key: LLM_SUPPORTS_IMAGES
+      #   value: "true"
+
+      # ---- Agent behaviour ----
+      - key: AGENT_MAX_STEPS            # tool-using steps per implementation/repair pass
+        value: "40"
+      - key: AGENT_MAX_REPAIR_CYCLES    # validation-driven repair passes after implementation
+        value: "3"
+      - key: AGENT_COMMAND_TIMEOUT      # seconds before a single shell command is interrupted
+        value: "300"
+      - key: HUMAN_REPLY_TIMEOUT        # seconds the agent waits for your answer to a question
+        value: "900"
+
+      # ---- GitHub integration (list/clone repos, push, pull requests, publish). ----
+      # Fine-grained token: Contents + Pull requests (read/write), Metadata (read),
+      # and Administration (read/write) only if you want the agent to create new repos.
       - key: GITHUB_TOKEN
         sync: false
       - key: GIT_AUTHOR_NAME
