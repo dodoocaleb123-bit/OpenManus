@@ -20,6 +20,8 @@ Configuration sources, in order of precedence:
        LLM_MAX_TOKENS        optional   default 8192
        LLM_MAX_INPUT_TOKENS  optional   default unlimited
        LLM_TEMPERATURE       optional   default 0.0
+                                  (Gemini 3+ is still sampled at 1.0 unless
+                                  LLM_KEEP_TEMPERATURE=true)
        LLM_VISION_MODEL      optional   adds an [llm.vision] section
        LLM_VISION_BASE_URL   optional   defaults to LLM_BASE_URL
        LLM_VISION_API_KEY    optional   defaults to LLM_API_KEY

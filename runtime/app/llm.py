@@ -109,6 +109,38 @@ def is_reasoning_model(model: str) -> bool:
     return any(re.search(p, name) for p in _REASONING_MODEL_PATTERNS)
 
 
+_logged_gemini_temperature: set[str] = set()
+
+
+def is_gemini_3_plus(model: str) -> bool:
+    """Whether ``model`` is Gemini 3 or newer.
+
+    Matched on the major version after provider prefixes are stripped, so
+    ``gemini-3-pro-preview``, ``gemini-3.1-flash`` and ``google/gemini-4-pro``
+    qualify, while ``gemini-2.5-pro`` does not.
+    """
+    match = re.search(r"\bgemini-(\d+)", _normalised_model(model))
+    return bool(match) and int(match.group(1)) >= 3
+
+
+def effective_temperature(model: str, temperature: float) -> float:
+    """Temperature to send for ``model``.
+
+    Google recommends temperature 1.0 for Gemini 3+. Lower values cause
+    looping and degraded reasoning, particularly across tool-calling turns.
+    ``LLM_KEEP_TEMPERATURE=true`` sends ``temperature`` unchanged.
+    """
+    if is_gemini_3_plus(model) and not _env_flag("LLM_KEEP_TEMPERATURE"):
+        if temperature != 1.0 and model not in _logged_gemini_temperature:
+            _logged_gemini_temperature.add(model)
+            logger.info(
+                f"Using temperature 1.0 for Gemini 3+ model {model} "
+                f"(configured {temperature}); set LLM_KEEP_TEMPERATURE=true to keep it"
+            )
+        return 1.0
+    return temperature
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Retry transient failures only.
 
@@ -328,6 +360,20 @@ class LLM:
             return 0
         return len(self.tokenizer.encode(text))
 
+    def _sampling_params(self, temperature: Optional[float] = None) -> dict:
+        """Token-limit and temperature fields for a completion request.
+
+        Reasoning models reject ``max_tokens`` and non-default temperatures.
+        Gemini 3+ is sampled at 1.0 unless ``LLM_KEEP_TEMPERATURE`` is set.
+        """
+        if is_reasoning_model(self.model):
+            return {"max_completion_tokens": self.max_tokens}
+        chosen = self.temperature if temperature is None else temperature
+        return {
+            "max_tokens": self.max_tokens,
+            "temperature": effective_temperature(self.model, chosen),
+        }
+
     def count_message_tokens(self, messages: List[dict]) -> int:
         return self.token_counter.count_message_tokens(messages)
 
@@ -502,13 +548,7 @@ class LLM:
                 "messages": messages,
             }
 
-            if is_reasoning_model(self.model):
-                params["max_completion_tokens"] = self.max_tokens
-            else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
-                )
+            params.update(self._sampling_params(temperature))
 
             if not stream:
                 # Non-streaming request
@@ -672,13 +712,7 @@ class LLM:
             }
 
             # Add model-specific parameters
-            if is_reasoning_model(self.model):
-                params["max_completion_tokens"] = self.max_tokens
-            else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
-                )
+            params.update(self._sampling_params(temperature))
 
             # Handle non-streaming request
             if not stream:
@@ -810,13 +844,7 @@ class LLM:
                 **kwargs,
             }
 
-            if is_reasoning_model(self.model):
-                params["max_completion_tokens"] = self.max_tokens
-            else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
-                )
+            params.update(self._sampling_params(temperature))
 
             params["stream"] = False  # Always use non-streaming for tool requests
             response: ChatCompletion = await self.client.chat.completions.create(

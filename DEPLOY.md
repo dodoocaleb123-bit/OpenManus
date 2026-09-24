@@ -163,6 +163,7 @@ automatically.
 | `LLM_MAX_TOKENS` | 8192 | Max output tokens per model call |
 | `LLM_SUPPORTS_IMAGES` | auto | `true`/`false` if vision support is misdetected for your model |
 | `LLM_REASONING_MODEL` | auto | `true`/`false` if your model rejects `temperature`/`max_tokens` |
+| `LLM_KEEP_TEMPERATURE` | unset | `true` to keep `LLM_TEMPERATURE` on Gemini 3+. Otherwise those models are sampled at 1.0 (Google's recommendation) |
 | `PLATFORM_USERNAME` | admin | Login username |
 
 ## LLM provider settings
@@ -229,6 +230,8 @@ are in-memory; the agent reopens the page when it needs it.
 | Task fails at once with "authentication" / 401 | Wrong key, or key and base URL from different providers. |
 | Task fails with "model not found" / 404 | `LLM_MODEL` is misspelled or not available to your account. |
 | "does not support images" error | The model has no vision; pick a vision model, or set `LLM_SUPPORTS_IMAGES=true` if it does. |
+| Gemini 3 tool call fails with 400 `thought_signature` | The runtime echoes `extra_content` automatically. If you still see this, the proxy in front of Gemini is stripping unknown tool-call fields. |
+| Gemini 3 loops or ignores a low `LLM_TEMPERATURE` | Gemini 3+ is forced to temperature 1.0. Set `LLM_KEEP_TEMPERATURE=true` to send the configured value. |
 | Rate-limit / 429 errors | Provider limits; the platform retries transient errors automatically. Upgrade your provider tier for heavy use. |
 | `GITHUB_TOKEN is not configured` | Add the token in Environment and redeploy. |
 | Push / PR / Publish fails with 403 | The token lacks `repo` scope or write access to that repository. |
