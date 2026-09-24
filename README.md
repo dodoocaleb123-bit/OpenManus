@@ -26,6 +26,10 @@ Open `http://127.0.0.1:8000`.
 
 The GitHub integration reads `GITHUB_TOKEN` from the server environment. Real agent execution still requires the normal OpenManus model configuration and dependencies.
 
+## Deploy
+
+The platform ships as a single Docker image (`runtime/Dockerfile`) with a Render Blueprint (`render.yaml`). See [DEPLOY.md](DEPLOY.md) for the Render walkthrough, environment variables, sizing, and how to run the same image on any Docker host.
+
 ## Architecture
 
 ```text

@@ -106,7 +106,9 @@ class SandboxSettings(BaseModel):
 
 
 class DaytonaSettings(BaseModel):
-    daytona_api_key: str
+    # Optional so that configs without a [daytona] section (including the shipped
+    # config.example.toml) still load; the Daytona sandbox itself requires a key.
+    daytona_api_key: Optional[str] = Field(None, description="Daytona API key")
     daytona_server_url: Optional[str] = Field(
         "https://app.daytona.io/api", description=""
     )

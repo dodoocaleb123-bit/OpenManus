@@ -1,42 +1,209 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>OpenManus Platform</title>
 <style>
-:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif}body{margin:0;background:#090b0e;color:#e9edf1}.shell{max-width:1180px;margin:auto;padding:28px}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.brand{font-weight:800;font-size:21px}.badge{border:1px solid #26303a;border-radius:999px;padding:7px 11px;color:#9ee6b0;font-size:12px}.grid{display:grid;grid-template-columns:300px 1fr;gap:16px}.card{background:#101419;border:1px solid #20262e;border-radius:16px;padding:18px}input,textarea,button,select{width:100%;box-sizing:border-box;border-radius:10px;border:1px solid #2a323b;background:#0b0f13;color:#fff;padding:10px}textarea{min-height:130px;resize:vertical}button{margin-top:9px;cursor:pointer;background:#f0f3f6;color:#0b0d10;font-weight:750}.secondary{background:#171c22;color:#e9edf1}.project{padding:11px;border-radius:10px;background:#171c22;margin-top:8px;cursor:pointer}.project.active{outline:1px solid #73808d}.muted{color:#8995a1;font-size:13px}.row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.repo{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:9px;border:1px solid #222a33;border-radius:10px;margin-top:7px}.repo button{width:auto;margin:0;padding:7px 10px}.panel{margin-top:14px;padding-top:14px;border-top:1px solid #20262e}pre{white-space:pre-wrap;word-break:break-word;max-height:430px;overflow:auto;color:#b9c3ce}@media(max-width:800px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}.shell{padding:16px}}
-</style></head>
-<body><div class="shell"><div class="top"><div class="brand">OpenManus Platform</div><div class="badge">Agent runtime online</div></div>
-<div class="grid"><aside class="card"><h3>Projects</h3><input id="projectName" placeholder="Project name"/><button onclick="createProject()">Create project</button><div id="projects" class="muted" style="margin-top:16px">Loading…</div>
-<div class="panel"><h3>GitHub</h3><div id="githubUser" class="muted">Checking connection…</div><button class="secondary" onclick="loadRepos()">Load repositories</button><div id="repos"></div></div></aside>
-<main class="card"><div id="selected" class="muted">Create or select a project.</div><div id="gitInfo" class="muted" style="margin-top:8px"></div><textarea id="prompt" placeholder="Tell the agent what to build or change…"></textarea><button id="run" onclick="runTask()" disabled>Run agent</button>
-<div class="row"><button class="secondary" onclick="gitStatus()">Git status</button><button class="secondary" onclick="gitDiff()">View diff</button></div><div class="row"><input id="branch" placeholder="new branch name"/><button class="secondary" onclick="createBranch()">Create branch</button></div><div class="row"><input id="commit" placeholder="commit message"/><button class="secondary" onclick="commitChanges()">Commit</button></div><button class="secondary" onclick="pushChanges()">Push current branch</button>
-<h3>Browser</h3><div class="row"><input id="browserUrl" placeholder="https://example.com"/><button class="secondary" onclick="startBrowser()">Start browser</button></div><div id="browserInfo" class="muted">No browser session.</div><img id="browserShot" style="display:none;width:100%;margin-top:10px;border:1px solid #20262e;border-radius:10px" alt="Browser screenshot"/><div class="row"><input id="browserSelector" placeholder="CSS selector (e.g. input[name=q])"/><button class="secondary" onclick="browserClick()">Click</button></div><div class="row"><input id="browserText" placeholder="Text to type"/><button class="secondary" onclick="browserType()">Type</button></div><div class="row"><input id="browserNav" placeholder="Navigate to URL"/><button class="secondary" onclick="browserNavigate()">Navigate</button></div><button class="secondary" onclick="refreshBrowser()">Refresh screenshot</button><button class="secondary" onclick="stopBrowser()">Stop browser</button><h3>Task history</h3><div id="history" class="muted">No tasks yet.</div><h3>Task activity</h3><pre id="events">No task running.</pre></main></div></div>
+:root{color-scheme:dark;--bg:#08090b;--panel:#0f1216;--panel2:#151a20;--line:#222932;--text:#e8edf2;--muted:#8b96a3;--accent:#8ab4ff;--ok:#7ddc9a;--bad:#ff8a8a;--warn:#f5c16c;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-size:14px}
+a{color:var(--accent)}button,input,textarea,select{font:inherit;color:inherit}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid var(--line)}
+.brand{font-weight:800;font-size:17px;letter-spacing:.2px}.brand small{color:var(--muted);font-weight:500;margin-left:8px}
+.pills{display:flex;gap:8px;flex-wrap:wrap}.pill{border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted)}.pill.ok{color:var(--ok)}.pill.bad{color:var(--bad)}
+#setup{display:none;margin:12px 18px 0;padding:12px 14px;border:1px solid #5a4520;background:#1d1609;color:#f3d9a4;border-radius:10px}
+.layout{display:grid;grid-template-columns:270px minmax(0,1fr) 420px;gap:12px;padding:12px 18px;height:calc(100vh - 58px)}
+.col{min-height:0;overflow:auto}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+input,textarea,select{width:100%;background:#0a0d10;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+textarea{resize:vertical;min-height:84px}
+button{cursor:pointer;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:7px 11px}
+button:hover{border-color:#3a4552}button.primary{background:#e8edf2;color:#0b0d10;border-color:#e8edf2;font-weight:700}
+button.danger{color:var(--bad)}button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:6px;margin-top:6px}.row>*{flex:1}.row>button{flex:0 0 auto}
+.muted{color:var(--muted);font-size:12.5px}.project{padding:8px 10px;border-radius:8px;cursor:pointer;margin-top:4px;display:flex;justify-content:space-between;gap:6px}
+.project:hover{background:var(--panel2)}.project.active{background:var(--panel2);outline:1px solid #3a4552}
+.center{display:flex;flex-direction:column;min-height:0}
+#feed{flex:1;overflow:auto;padding:4px 2px}
+.ev{margin:6px 0;padding:8px 10px;border-radius:9px;background:var(--panel);border:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
+.ev.sys{background:none;border:none;color:var(--muted);padding:2px 4px;font-size:12.5px}
+.ev.step{background:none;border:none;border-top:1px dashed var(--line);border-radius:0;color:var(--muted);font-size:11.5px;padding:6px 2px 0}
+.ev.thought{border-left:3px solid var(--accent)}.ev.user{background:#132033;border-color:#22385a;margin-left:15%}
+.ev.tool{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}.ev.tool .name{color:var(--accent);font-weight:700}
+.ev.bad{border-color:#5a2a2a}.ev.good{border-color:#23502f}.ev.warn{border-color:#5a4520}
+.ev.question{border:1px solid var(--warn);background:#1d1609}
+details summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:4px}details pre{margin:6px 0 0;max-height:320px;overflow:auto;font-size:12px;color:#b9c3ce;white-space:pre-wrap}
+.composer{border-top:1px solid var(--line);padding-top:10px}
+#questionBox{display:none;border:1px solid var(--warn);background:#1d1609;border-radius:10px;padding:10px;margin-bottom:8px}
+.shot{position:relative;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000;min-height:120px}
+.shot img{width:100%;display:block;cursor:crosshair}.shot .empty{padding:40px 12px;text-align:center;color:var(--muted)}
+.tabs{display:flex;gap:4px;margin-bottom:8px}.tabs button{flex:1}.tabs button.on{background:#e8edf2;color:#0b0d10}
+.list{max-height:260px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.repo{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)}
+.badge{font-size:11px;border-radius:999px;padding:1px 7px;border:1px solid var(--line);color:var(--muted)}
+.badge.succeeded{color:var(--ok)}.badge.failed,.badge.cancelled{color:var(--bad)}.badge.running,.badge.queued{color:var(--warn)}
+@media(max-width:1200px){.layout{grid-template-columns:240px 1fr;height:auto}.right{grid-column:1/-1}}
+@media(max-width:760px){.layout{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">OpenManus<small>autonomous engineer · browser · cloud workspace</small></div>
+  <div class="pills"><span id="pillModel" class="pill">model…</span><span id="pillGithub" class="pill">GitHub…</span></div>
+</header>
+<div id="setup"></div>
+<div class="layout">
+  <!-- left: projects -->
+  <div class="col">
+    <div class="card">
+      <h3>Projects</h3>
+      <div class="row"><input id="projectName" placeholder="New project name" onkeydown="if(event.key==='Enter')createProject()"/><button onclick="createProject()">Create</button></div>
+      <div id="projects" class="muted" style="margin-top:8px">Loading…</div>
+    </div>
+    <div class="card">
+      <h3>Task history</h3>
+      <div id="history" class="muted">Select a project.</div>
+    </div>
+  </div>
+
+  <!-- center: agent -->
+  <div class="col center">
+    <div class="card" style="margin-bottom:8px">
+      <div id="selected" style="font-weight:700">Create or select a project to start.</div>
+      <div id="gitInfo" class="muted" style="margin-top:3px"></div>
+    </div>
+    <div id="feed"><div class="ev sys">The agent's thoughts, tool calls, test results and questions appear here live.</div></div>
+    <div class="composer">
+      <div id="questionBox"><div style="font-weight:700;color:var(--warn)">The agent is asking:</div><div id="questionText" style="margin:6px 0;white-space:pre-wrap"></div></div>
+      <textarea id="prompt" placeholder="Describe what to build or change… e.g. “Build a landing page for a football academy with a signup form, test it in the browser, and publish it to GitHub.”" onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey))submitPrompt()"></textarea>
+      <div class="row">
+        <span id="runHint" class="muted" style="align-self:center">Ctrl/⌘ + Enter to send</span>
+        <button id="cancelBtn" class="danger" onclick="cancelTask()" style="display:none">Stop agent</button>
+        <button id="runBtn" class="primary" onclick="submitPrompt()" disabled>Run agent</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- right: browser / github / files -->
+  <div class="col right">
+    <div class="card">
+      <h3>Shared browser <span class="muted" style="text-transform:none;letter-spacing:0">— you and the agent see the same page</span></h3>
+      <div class="shot"><img id="browserShot" alt="Live browser" style="display:none" onclick="clickShot(event)"/><div id="shotEmpty" class="empty">No browser running. The agent opens one when it needs it, or start one here.</div></div>
+      <div id="browserInfo" class="muted" style="margin-top:6px"></div>
+      <div class="row"><input id="browserNav" placeholder="https://… or http://localhost:3000" onkeydown="if(event.key==='Enter')browserGo()"/><button onclick="browserGo()">Go</button></div>
+      <div class="row"><input id="browserKeys" placeholder="Type into the focused field (click it on the screenshot first)" onkeydown="if(event.key==='Enter')browserType(true)"/><button onclick="browserType(false)">Type</button></div>
+      <div class="row"><button onclick="browserKey('Enter')">Enter</button><button onclick="browserKey('Tab')">Tab</button><button onclick="browserKey('PageDown')">Scroll ↓</button><button onclick="browserKey('PageUp')">Scroll ↑</button><button class="danger" onclick="stopBrowser()">Close</button></div>
+    </div>
+    <div class="card">
+      <div class="tabs"><button id="tabGit" class="on" onclick="showTab('git')">GitHub</button><button id="tabFiles" onclick="showTab('files')">Files</button></div>
+      <div id="paneGit">
+        <div class="row"><input id="branch" placeholder="new-branch-name"/><button onclick="createBranch()">Branch</button></div>
+        <div class="row"><input id="commit" placeholder="Commit message"/><button onclick="commitChanges()">Commit</button></div>
+        <div class="row"><button onclick="gitStatus()">Status</button><button onclick="gitDiff()">Diff</button><button onclick="pushChanges()">Push</button></div>
+        <div class="row"><input id="prTitle" placeholder="Pull request title"/><button onclick="openPR()">Open PR</button></div>
+        <div class="row"><input id="publishName" placeholder="new-repo-name (publish project)"/><button onclick="publishRepo()">Publish</button></div>
+        <details style="margin-top:8px"><summary>Connect an existing repository</summary><button style="margin-top:6px" onclick="loadRepos()">Load my repositories</button><div id="repos" class="list"></div></details>
+        <pre id="gitOut" class="list" style="white-space:pre-wrap;margin:8px 0 0"></pre>
+      </div>
+      <div id="paneFiles" style="display:none"><button onclick="loadFiles()">Refresh</button><div id="files" class="list" style="margin-top:6px"></div></div>
+    </div>
+  </div>
+</div>
+
 <script>
-let projects=[],selected=null,browserSession=null,browserTimer=null;
-async function api(url,opts={}){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||'Request failed');return d}
-async function loadProjects(){projects=await api('/api/projects');renderProjects();try{const u=await api('/api/github/user');document.getElementById('githubUser').textContent=`GitHub: ${u.login}`;}catch(e){document.getElementById('githubUser').textContent='GitHub: GITHUB_TOKEN not connected';}}
-function renderProjects(){const el=document.getElementById('projects');el.innerHTML='';projects.forEach(p=>{const d=document.createElement('div');d.className='project'+(selected?.id===p.id?' active':'');d.textContent=p.name;d.onclick=()=>selectProject(p);el.appendChild(d)});if(!projects.length)el.textContent='No projects yet.'}
-async function refreshHistory(){if(!selected)return;try{const ts=await api(`/api/projects/${selected.id}/tasks`);const el=document.getElementById('history');el.innerHTML=ts.slice().reverse().map(t=>`<div class="repo"><span>${t.status} · attempt ${t.attempt}<br><small>${escapeHtml(t.prompt.slice(0,90))}</small></span>${t.status!=='running'?`<button onclick="resumeTask('${t.id}')">Resume</button>`:''}</div>`).join('')||'No tasks yet.'}catch(e){document.getElementById('history').textContent=e.message}}
-function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function selectProject(p){selected=p;document.getElementById('selected').textContent=`Project: ${p.name}`;document.getElementById('run').disabled=false;document.getElementById('gitInfo').textContent=p.git_ready?`Repository: ${p.repository} · branch: ${p.branch||'unknown'}`:'No GitHub repository connected';renderProjects();refreshHistory()}
-async function createProject(){const name=document.getElementById('projectName').value.trim();if(!name)return;try{const p=await api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});projects.push(p);selectProject(p);document.getElementById('projectName').value='';}catch(e){alert(e.message)}}
-async function loadRepos(){const el=document.getElementById('repos');try{const rs=await api('/api/github/repos');el.innerHTML=rs.map(r=>`<div class="repo"><span>${r.full_name}</span><button onclick="connectRepo('${r.owner.login}','${r.name}')">Connect</button></div>`).join('')||'<div class="muted">No repositories.</div>'}catch(e){el.textContent=e.message}}
-async function connectRepo(owner,repo){if(!selected)return alert('Select a project first');try{const p=await api(`/api/projects/${selected.id}/github/connect`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({owner,repo})});selected=p.project;projects=projects.map(x=>x.id===selected.id?selected:x);selectProject(selected);alert('Repository cloned into the project workspace.')}catch(e){alert(e.message)}}
-async function gitStatus(){if(!selected)return;try{const d=await api(`/api/projects/${selected.id}/git/status`);document.getElementById('events').textContent=JSON.stringify(d,null,2)}catch(e){alert(e.message)}}
-async function gitDiff(){if(!selected)return;try{const d=await api(`/api/projects/${selected.id}/git/diff`);document.getElementById('events').textContent=d.diff||'No changes.'}catch(e){alert(e.message)}}
-async function createBranch(){if(!selected)return;const name=document.getElementById('branch').value.trim();if(!name)return;try{const d=await api(`/api/projects/${selected.id}/git/branch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});selected.branch=d.branch;selectProject(selected)}catch(e){alert(e.message)}}
-async function commitChanges(){if(!selected)return;const message=document.getElementById('commit').value.trim();if(!message)return;try{await api(`/api/projects/${selected.id}/git/commit`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message})});document.getElementById('commit').value='';await gitStatus()}catch(e){alert(e.message)}}
-async function pushChanges(){if(!selected)return;try{const d=await api(`/api/projects/${selected.id}/git/push`,{method:'POST'});document.getElementById('events').textContent=d.result||'Pushed.'}catch(e){alert(e.message)}}
-async function resumeTask(id){try{const task=await api(`/api/tasks/${id}/resume`,{method:'POST'});document.getElementById('events').textContent='Resuming…';const es=new EventSource(`/api/tasks/${task.id}/events`);es.onmessage=e=>{const ev=JSON.parse(e.data);document.getElementById('events').textContent+=`\n[${ev.type}] ${ev.message}`;if(ev.type==='task.succeeded'||ev.type==='task.failed'){es.close();refreshHistory();document.getElementById('run').disabled=false}};es.onerror=()=>{es.close();refreshHistory()}}catch(e){alert(e.message)}}
-async function runTask(){if(!selected)return;const prompt=document.getElementById('prompt').value.trim();if(!prompt)return;document.getElementById('run').disabled=true;document.getElementById('events').textContent='Starting…';try{const task=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:selected.id,prompt,browser_session_id:browserSession?.id||null})});const es=new EventSource(`/api/tasks/${task.id}/events`);es.onmessage=e=>{const ev=JSON.parse(e.data);document.getElementById('events').textContent+=`\n[${ev.type}] ${ev.message}`;if(ev.type==='task.succeeded'||ev.type==='task.failed'){es.close();refreshHistory();document.getElementById('run').disabled=false;}};es.onerror=()=>{es.close();document.getElementById('run').disabled=false}}catch(e){document.getElementById('events').textContent=e.message;document.getElementById('run').disabled=false}}
-async function startBrowser(){if(!selected)return alert('Select a project first');const url=document.getElementById('browserUrl').value.trim()||'about:blank';try{browserSession=await api('/api/browser/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:selected.id,url,headless:true})});updateBrowser();startBrowserRefresh();}catch(e){alert(e.message)}}
-function startBrowserRefresh(){if(browserTimer)clearInterval(browserTimer);browserTimer=setInterval(refreshBrowser,2500)}
-async function refreshBrowser(){if(!browserSession)return;try{browserSession=await api(`/api/browser/sessions/${browserSession.id}`);updateBrowser();if(browserSession.running){document.getElementById('browserShot').src=`/api/browser/sessions/${browserSession.id}/screenshot?t=${Date.now()}`;document.getElementById('browserShot').style.display='block'}}catch(e){document.getElementById('browserInfo').textContent=e.message}}
-function updateBrowser(){document.getElementById('browserInfo').textContent=browserSession?`Browser ${browserSession.running?'running':'stopped'} · ${browserSession.url||'about:blank'} · ${browserSession.id}`:'No browser session.'}
-async function browserNavigate(){if(!browserSession)return;const url=document.getElementById('browserNav').value.trim();if(!url)return;try{browserSession=await api(`/api/browser/sessions/${browserSession.id}/navigate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});await refreshBrowser()}catch(e){alert(e.message)}}
-async function browserClick(){if(!browserSession)return;const selector=document.getElementById('browserSelector').value.trim();if(!selector)return;try{browserSession=await api(`/api/browser/sessions/${browserSession.id}/click`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selector})});await refreshBrowser()}catch(e){alert(e.message)}}
-async function browserType(){if(!browserSession)return;const selector=document.getElementById('browserSelector').value.trim(),text=document.getElementById('browserText').value;if(!selector)return;try{browserSession=await api(`/api/browser/sessions/${browserSession.id}/type`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selector,text,submit:false})});await refreshBrowser()}catch(e){alert(e.message)}}
-async function stopBrowser(){if(!browserSession)return;try{await api(`/api/browser/sessions/${browserSession.id}`,{method:'DELETE'});browserSession=null;clearInterval(browserTimer);document.getElementById('browserShot').style.display='none';updateBrowser()}catch(e){alert(e.message)}}
-loadProjects();
-</script></body></html>
+"use strict";
+let projects=[],selected=null,currentTask=null,es=null,browserSession=null,browserTimer=null,lastEventId=null;
+const $=id=>document.getElementById(id);
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+async function api(url,opts={}){if(opts.body&&typeof opts.body!=='string'){opts.body=JSON.stringify(opts.body);opts.headers={'Content-Type':'application/json',...(opts.headers||{})}}const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok){const detail=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join('; '):d.detail;throw Error(detail||`Request failed (${r.status})`)}return d}
+function safeUrl(u){return typeof u==='string'&&/^https:\/\/github\.com\//.test(u)?u:null}
+
+/* ---------------- status ---------------- */
+async function loadStatus(){try{const s=await api('/api/status');const m=$('pillModel');if(s.llm.configured){m.textContent=`model: ${s.llm.model}${s.llm.supports_images?' · vision':''}`;m.className='pill ok'}else{m.textContent='model: not configured';m.className='pill bad';const b=$('setup');b.style.display='block';b.textContent='⚠ '+s.llm.problem}
+const g=$('pillGithub');if(s.github.token_configured){g.textContent='GitHub: checking…';api('/api/github/user').then(u=>{g.textContent=`GitHub: ${u.login}`;g.className='pill ok'}).catch(e=>{g.textContent='GitHub: token rejected';g.className='pill bad'})}else{g.textContent='GitHub: no token';g.className='pill'}}catch(e){}}
+
+/* ---------------- projects ---------------- */
+async function loadProjects(){projects=await api('/api/projects');renderProjects();const want=localStorage.getItem('project');const p=projects.find(x=>x.id===want);if(p&&!selected)selectProject(p)}
+function renderProjects(){const box=$('projects');box.innerHTML='';if(!projects.length){box.textContent='No projects yet.';return}projects.slice().reverse().forEach(p=>{const d=el('div','project'+(selected?.id===p.id?' active':''));d.append(el('span','',p.name));if(p.repository)d.append(el('span','muted',p.repository.split('/')[1]));d.onclick=()=>selectProject(p);box.append(d)})}
+async function createProject(){const name=$('projectName').value.trim();if(!name)return;try{const p=await api('/api/projects',{method:'POST',body:{name}});projects.push(p);$('projectName').value='';selectProject(p)}catch(e){alert(e.message)}}
+function renderGitInfo(){$('gitInfo').textContent=selected.git_ready?`${selected.repository||'local git repository'} · branch ${selected.branch||'?'}`:'No repository yet — connect one, or let the agent publish the project to GitHub.'}
+async function selectProject(p){selected=p;localStorage.setItem('project',p.id);$('selected').textContent=p.name;renderGitInfo();$('runBtn').disabled=false;renderProjects();$('gitOut').textContent='';closeStream();$('feed').innerHTML='';
+const tasks=await refreshHistory();const latest=tasks[tasks.length-1];if(latest)showTask(latest);else{$('feed').append(el('div','ev sys','New project. Describe what the agent should build.'));setRunning(false)}
+attachProjectBrowser()}
+async function refreshProject(){if(!selected)return;try{selected=await api(`/api/projects/${selected.id}`);projects=projects.map(x=>x.id===selected.id?selected:x);renderGitInfo();renderProjects()}catch(e){}}
+
+/* ---------------- tasks ---------------- */
+async function refreshHistory(){if(!selected)return[];try{const ts=await api(`/api/projects/${selected.id}/tasks`);const box=$('history');box.innerHTML='';if(!ts.length)box.textContent='No tasks yet.';ts.slice().reverse().forEach(t=>{const r=el('div','repo');const left=el('div');const top=el('div');top.append(el('span','badge '+t.status,t.status));left.append(top,el('div','muted',t.prompt.slice(0,80)));left.style.cursor='pointer';left.onclick=()=>showTask(t);r.append(left);if(!['running','queued'].includes(t.status)){const b=el('button','','Retry');b.onclick=()=>resumeTask(t.id);r.append(b)}box.append(r)});return ts}catch(e){$('history').textContent=e.message;return[]}}
+function setRunning(on){$('cancelBtn').style.display=on?'inline-block':'none';$('runBtn').textContent=on?'Send to agent':'Run agent';$('runHint').textContent=on?'The agent reads your message at its next step':'Ctrl/⌘ + Enter to send'}
+async function showTask(t){closeStream();currentTask=t;$('feed').innerHTML='';$('feed').append(el('div','ev user',t.prompt));lastEventId=null;const evs=await api(`/api/tasks/${t.id}/events/history`);evs.forEach(render);const fresh=await api(`/api/tasks/${t.id}`);currentTask=fresh;const live=['running','queued'].includes(fresh.status);setRunning(live);showQuestion(fresh.pending_question);if(live)openStream(fresh.id)}
+async function submitPrompt(){if(!selected)return;const text=$('prompt').value.trim();if(!text)return;
+if(currentTask&&['running','queued'].includes(currentTask.status)){try{await api(`/api/tasks/${currentTask.id}/messages`,{method:'POST',body:{message:text}});$('prompt').value='';showQuestion(null)}catch(e){alert(e.message)}return}
+$('runBtn').disabled=true;try{const t=await api('/api/tasks',{method:'POST',body:{project_id:selected.id,prompt:text,browser_session_id:browserSession?.id||null}});$('prompt').value='';currentTask=t;$('feed').innerHTML='';$('feed').append(el('div','ev user',text));lastEventId=null;setRunning(true);openStream(t.id);refreshHistory()}catch(e){alert(e.message)}finally{$('runBtn').disabled=false}}
+async function cancelTask(){if(!currentTask)return;try{await api(`/api/tasks/${currentTask.id}/cancel`,{method:'POST'})}catch(e){alert(e.message)}}
+async function resumeTask(id){try{const t=await api(`/api/tasks/${id}/resume`,{method:'POST'});await showTask(t);refreshHistory()}catch(e){alert(e.message)}}
+function closeStream(){if(es){es.close();es=null}}
+function openStream(id){closeStream();const q=lastEventId?`?last_event_id=${encodeURIComponent(lastEventId)}`:'';es=new EventSource(`/api/tasks/${id}/events${q}`);es.onmessage=m=>{const ev=JSON.parse(m.data);if(ev.id===lastEventId)return;render(ev);if(['task.succeeded','task.failed','task.cancelled'].includes(ev.type)){closeStream();finishTask()}};es.onerror=async()=>{try{const t=await api(`/api/tasks/${id}`);if(!['running','queued'].includes(t.status)){closeStream();finishTask()}}catch(e){}}}
+async function finishTask(){setRunning(false);showQuestion(null);refreshHistory();refreshProject();if(currentTask)currentTask=await api(`/api/tasks/${currentTask.id}`).catch(()=>currentTask)}
+function showQuestion(q){$('questionBox').style.display=q?'block':'none';$('questionText').textContent=q||'';if(q){$('prompt').placeholder='Type your answer to the agent…';$('prompt').focus()}else $('prompt').placeholder='Describe what to build or change…'}
+
+/* ---------------- event rendering ---------------- */
+function fmtArgs(tool,raw){let a;try{a=JSON.parse(raw||'{}')}catch(e){return raw||''}
+if(tool==='bash')return '$ '+(a.command??'');if(tool==='str_replace_editor')return `${a.command} ${a.path||''}`;if(tool==='platform_browser')return `${a.action}${a.url?' '+a.url:''}${a.selector?' '+a.selector:''}${a.text?' "'+a.text+'"':''}`;if(tool==='platform_git')return `${a.action}${a.branch?' '+a.branch:''}${a.message?' "'+a.message+'"':''}${a.title?' "'+a.title+'"':''}${a.repo_name?' '+a.repo_name:''}`;if(tool==='python_execute')return (a.code||'').slice(0,400);if(tool==='web_search')return a.query||'';return JSON.stringify(a).slice(0,400)}
+function detailsBox(label,text){const d=el('details');d.append(el('summary','',label),el('pre','',text));return d}
+function render(ev){lastEventId=ev.id;const f=$('feed');const d=ev.data||{};let node;
+switch(ev.type){
+case 'agent.step':node=el('div','ev step',ev.message);break;
+case 'agent.thought':if(!d.content)return;node=el('div','ev thought',d.content);break;
+case 'agent.tool_call':node=el('div','ev tool');node.append(el('span','name',d.tool+' '),document.createTextNode(fmtArgs(d.tool,d.arguments)));break;
+case 'agent.tool_result':node=el('div','ev tool '+(d.ok?'':'bad'));node.append(detailsBox(`${d.ok?'✓':'✗'} ${d.tool} output${d.image?' (screenshot sent to the agent)':''}`,d.output||''));if(d.tool==='platform_browser')refreshShotSoon();if(d.tool==='platform_git')refreshProject();break;
+case 'agent.question':node=el('div','ev question','❓ '+ev.message);showQuestion(ev.message);break;
+case 'agent.question_timeout':node=el('div','ev sys',ev.message);showQuestion(null);break;
+case 'human.reply':case 'human.message':node=el('div','ev user',ev.message);if(ev.type==='human.reply')showQuestion(null);break;
+case 'agent.user_message':node=el('div','ev sys','✓ '+ev.message);break;
+case 'coding.validating':node=el('div','ev sys','🧪 '+ev.message+'…');break;
+case 'coding.validation':{const ok=ev.message==='Validation passed';node=el('div','ev '+(ok?'good':'bad'),(ok?'✅ ':'❌ ')+ev.message);(d.results||[]).forEach(r=>node.append(detailsBox(`${r.skipped?'⏭':r.ok?'✓':'✗'} ${r.command}`,r.output||'')));break}
+case 'coding.repair':node=el('div','ev warn','🔧 '+ev.message+' — feeding the failure back to the agent');break;
+case 'github.pull_request':case 'github.repository':{node=el('div','ev good');const u=safeUrl(d.url);node.append(document.createTextNode(ev.type==='github.pull_request'?'🔀 Pull request opened: ':'📦 Repository published: '));if(u){const a=el('a','',u);a.href=u;a.target='_blank';a.rel='noopener';node.append(a)}refreshProject();break}
+case 'browser.started':case 'browser.attached':attachBrowser(d.session_id);node=el('div','ev sys','🌐 '+ev.message);break;
+case 'task.succeeded':node=el('div','ev good','🎉 Done. '+(d.result||ev.message));break;
+case 'task.failed':node=el('div','ev bad','⚠ '+ev.message+(d.result?'\n\nAgent summary: '+d.result:''));break;
+case 'task.cancelled':node=el('div','ev bad','⏹ Task cancelled');break;
+default:node=el('div','ev sys',ev.message)}
+const stick=f.scrollHeight-f.scrollTop-f.clientHeight<120;f.append(node);if(stick)f.scrollTop=f.scrollHeight}
+
+/* ---------------- browser ---------------- */
+async function attachProjectBrowser(){browserSession=null;updateBrowser();if(!selected)return;try{browserSession=await api(`/api/browser/projects/${selected.id}/session`);updateBrowser();startShots()}catch(e){stopShots()}}
+async function attachBrowser(id){if(!id)return;try{browserSession=await api(`/api/browser/sessions/${id}`);updateBrowser();startShots()}catch(e){}}
+function updateBrowser(){const on=browserSession&&browserSession.running;$('browserShot').style.display=on?'block':'none';$('shotEmpty').style.display=on?'none':'block';$('browserInfo').textContent=on?`${browserSession.title||''} ${browserSession.url||''}`.trim():''}
+function startShots(){stopShots();refreshShot();browserTimer=setInterval(()=>{if(!document.hidden)refreshShot()},2000)}
+function stopShots(){if(browserTimer)clearInterval(browserTimer);browserTimer=null}
+let shotPending=false;async function refreshShot(){if(!browserSession||shotPending)return;shotPending=true;try{browserSession=await api(`/api/browser/sessions/${browserSession.id}`);updateBrowser();if(browserSession.running){const img=new Image();img.onload=()=>{$('browserShot').src=img.src;shotPending=false};img.onerror=()=>{shotPending=false};img.src=`/api/browser/sessions/${browserSession.id}/screenshot?t=${Date.now()}`}else{shotPending=false;stopShots()}}catch(e){shotPending=false;browserSession=null;updateBrowser();stopShots()}}
+function refreshShotSoon(){setTimeout(refreshShot,300)}
+async function ensureBrowser(url){if(browserSession&&browserSession.running)return true;if(!selected){alert('Select a project first');return false}try{browserSession=await api('/api/browser/sessions',{method:'POST',body:{project_id:selected.id,url:url||'about:blank',headless:true}});updateBrowser();startShots();return true}catch(e){alert(e.message);return false}}
+async function browserGo(){let url=$('browserNav').value.trim();if(!url)return;if(!/^[a-z]+:/i.test(url))url='https://'+url;const fresh=!(browserSession&&browserSession.running);if(!await ensureBrowser(url))return;if(!fresh){try{await api(`/api/browser/sessions/${browserSession.id}/navigate`,{method:'POST',body:{url}})}catch(e){alert(e.message)}}refreshShotSoon()}
+async function clickShot(e){if(!browserSession)return;const img=$('browserShot');const r=img.getBoundingClientRect();const x=(e.clientX-r.left)*(img.naturalWidth/r.width),y=(e.clientY-r.top)*(img.naturalHeight/r.height);try{await api(`/api/browser/sessions/${browserSession.id}/click_at`,{method:'POST',body:{x,y}});refreshShotSoon()}catch(err){alert(err.message)}}
+async function browserType(enter){if(!browserSession)return;const text=$('browserKeys').value;try{await api(`/api/browser/sessions/${browserSession.id}/keyboard`,{method:'POST',body:{text,key:enter?'Enter':null}});$('browserKeys').value='';refreshShotSoon()}catch(e){alert(e.message)}}
+async function browserKey(key){if(!browserSession)return;try{await api(`/api/browser/sessions/${browserSession.id}/keyboard`,{method:'POST',body:{key}});refreshShotSoon()}catch(e){alert(e.message)}}
+async function stopBrowser(){if(!browserSession)return;try{await api(`/api/browser/sessions/${browserSession.id}`,{method:'DELETE'})}catch(e){}browserSession=null;stopShots();updateBrowser()}
+
+/* ---------------- git / github ---------------- */
+function out(t){$('gitOut').textContent=t}
+function need(){if(!selected){alert('Select a project first');return false}return true}
+async function gitStatus(){if(!need())return;try{const d=await api(`/api/projects/${selected.id}/git/status`);out(`branch: ${d.branch}\n${d.status}\n${d.diff_stat}`)}catch(e){out(e.message)}}
+async function gitDiff(){if(!need())return;try{const d=await api(`/api/projects/${selected.id}/git/diff`);out(d.diff||'No changes.')}catch(e){out(e.message)}}
+async function createBranch(){if(!need())return;const name=$('branch').value.trim();if(!name)return;try{const d=await api(`/api/projects/${selected.id}/git/branch`,{method:'POST',body:{name}});$('branch').value='';out(`Switched to ${d.branch}`);refreshProject()}catch(e){out(e.message)}}
+async function commitChanges(){if(!need())return;const message=$('commit').value.trim();if(!message)return;try{const d=await api(`/api/projects/${selected.id}/git/commit`,{method:'POST',body:{message}});$('commit').value='';out(d.result)}catch(e){out(e.message)}}
+async function pushChanges(){if(!need())return;out('Pushing…');try{const d=await api(`/api/projects/${selected.id}/git/push`,{method:'POST'});out(d.result)}catch(e){out(e.message)}}
+async function openPR(){if(!need())return;const title=$('prTitle').value.trim();if(!title)return alert('Enter a pull request title');out('Opening pull request…');try{const d=await api(`/api/projects/${selected.id}/github/pull-request`,{method:'POST',body:{title}});$('prTitle').value='';$('gitOut').textContent='';const u=safeUrl(d.url);$('gitOut').append(document.createTextNode(`PR #${d.number}${d.already_existed?' (already open)':''}: `));if(u){const a=el('a','',u);a.href=u;a.target='_blank';a.rel='noopener';$('gitOut').append(a)}}catch(e){out(e.message)}}
+async function publishRepo(){if(!need())return;const name=$('publishName').value.trim();if(!name)return alert('Enter a repository name');if(!confirm(`Create a new PRIVATE GitHub repository "${name}" and push this project?`))return;out('Publishing…');try{const d=await api(`/api/projects/${selected.id}/github/publish`,{method:'POST',body:{name,private:true}});$('publishName').value='';selected=d.project;renderGitInfo();$('gitOut').textContent='Published: ';const u=safeUrl(d.url);if(u){const a=el('a','',u);a.href=u;a.target='_blank';a.rel='noopener';$('gitOut').append(a)}}catch(e){out(e.message)}}
+async function loadRepos(){const box=$('repos');box.textContent='Loading…';try{const rs=await api('/api/github/repos');box.innerHTML='';if(!rs.length)box.textContent='No repositories.';rs.forEach(r=>{const row=el('div','repo');row.append(el('span','',r.full_name));const b=el('button','','Clone');b.onclick=()=>connectRepo(r.owner.login,r.name);row.append(b);box.append(row)})}catch(e){box.textContent=e.message}}
+async function connectRepo(owner,repo){if(!need())return;out(`Cloning ${owner}/${repo}…`);try{const d=await api(`/api/projects/${selected.id}/github/connect`,{method:'POST',body:{owner,repo}});selected=d.project;projects=projects.map(x=>x.id===selected.id?selected:x);renderGitInfo();renderProjects();out(`Cloned ${owner}/${repo} into the project workspace.`)}catch(e){out(e.message)}}
+
+/* ---------------- files ---------------- */
+function showTab(t){$('paneGit').style.display=t==='git'?'block':'none';$('paneFiles').style.display=t==='files'?'block':'none';$('tabGit').className=t==='git'?'on':'';$('tabFiles').className=t==='files'?'on':'';if(t==='files')loadFiles()}
+async function loadFiles(){if(!selected)return;const box=$('files');try{const d=await api(`/api/projects/${selected.id}/files`);box.innerHTML='';if(!d.entries.length)box.textContent='Workspace is empty.';d.entries.forEach(e=>{const depth=e.path.split('/').length-1;box.append(el('div','',`${'  '.repeat(depth)}${e.dir?'📁':'📄'} ${e.path.split('/').pop()}`))})}catch(e){box.textContent=e.message}}
+
+loadStatus();loadProjects();
+</script>
+</body>
+</html>

@@ -29,6 +29,14 @@ class TypeAction(SelectorAction):
 class PressAction(SelectorAction):
     key: str = Field(min_length=1, max_length=100)
 
+class ClickAt(BaseModel):
+    x: float = Field(ge=0, le=10000)
+    y: float = Field(ge=0, le=10000)
+
+class KeyboardAction(BaseModel):
+    text: str | None = Field(default=None, max_length=10000)
+    key: str | None = Field(default=None, max_length=100)
+
 
 def build_browser_router(store: PlatformStore, browsers: BrowserManager) -> APIRouter:
     router = APIRouter(prefix="/api/browser")
@@ -44,7 +52,7 @@ def build_browser_router(store: PlatformStore, browsers: BrowserManager) -> APIR
         if not store.get_project(body.project_id):
             raise HTTPException(status_code=404, detail="Project not found")
         try:
-            session = await browsers.create(body.project_id, body.url, body.headless)
+            session = await browsers.get_or_create(body.project_id, body.url)
             return await session.status()
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -84,6 +92,32 @@ def build_browser_router(store: PlatformStore, browsers: BrowserManager) -> APIR
             return await get_session(session_id).press(body.selector, body.key)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/sessions/{session_id}/click_at")
+    async def click_at(session_id: str, body: ClickAt):
+        try:
+            return await get_session(session_id).click_at(body.x, body.y)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/sessions/{session_id}/keyboard")
+    async def keyboard(session_id: str, body: KeyboardAction):
+        try:
+            return await get_session(session_id).keyboard(body.text, body.key)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/projects/{project_id}/session")
+    async def project_session(project_id: str):
+        """The project's live shared browser (e.g. one the agent opened)."""
+        session = browsers.for_project(project_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="No browser running for this project")
+        return await session.status()
 
     @router.get("/sessions/{session_id}/screenshot")
     async def screenshot(session_id: str):

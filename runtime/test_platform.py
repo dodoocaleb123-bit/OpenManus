@@ -56,3 +56,39 @@ def test_persistence_and_resume(tmp_path: Path):
     assert len(recovered) == 1
     assert store2.get_task(t.id).status == TaskStatus.QUEUED
     assert len(asyncio.run(store2.list_events(t.id))) == 1
+
+
+def test_auth_disabled_by_default(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv('PLATFORM_PASSWORD', raising=False)
+    client = TestClient(create_app(tmp_path))
+    assert client.get('/').status_code == 200
+    assert client.get('/api/projects').status_code == 200
+
+
+def test_basic_auth_protects_everything_except_health(tmp_path: Path):
+    client = TestClient(create_app(tmp_path, password='s3cret'))
+    # Health stays open so hosting platforms can poll it without credentials.
+    assert client.get('/api/health').json()['status'] == 'ok'
+    for path in ('/', '/api/projects', '/static/index.html'):
+        r = client.get(path)
+        assert r.status_code == 401, path
+        assert r.headers['www-authenticate'].startswith('Basic realm=')
+    assert client.get('/api/projects', auth=('admin', 'wrong')).status_code == 401
+    assert client.get('/api/projects', auth=('someone', 's3cret')).status_code == 401
+    assert client.get('/api/projects', auth=('admin', 's3cret')).status_code == 200
+    assert client.get('/', auth=('admin', 's3cret')).status_code == 200
+
+
+def test_basic_auth_reads_environment(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv('PLATFORM_PASSWORD', 'from-env')
+    monkeypatch.setenv('PLATFORM_USERNAME', 'ops')
+    client = TestClient(create_app(tmp_path))
+    assert client.get('/api/projects').status_code == 401
+    assert client.get('/api/projects', auth=('ops', 'from-env')).status_code == 200
+
+
+def test_basic_auth_sse_stream_requires_credentials(tmp_path: Path):
+    client = TestClient(create_app(tmp_path, password='s3cret'))
+    p = client.post('/api/projects', json={'name': 'demo'}, auth=('admin', 's3cret')).json()
+    assert client.get(f"/api/projects/{p['id']}/tasks").status_code == 401
+    assert client.get(f"/api/projects/{p['id']}/tasks", auth=('admin', 's3cret')).status_code == 200

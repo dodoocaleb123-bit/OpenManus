@@ -36,14 +36,13 @@
 
 ## Next implementation order
 
-1. Durable browser workers + reconnect/resume
-2. Autonomous build/test/debug/repair loop
+1. Isolated execution workers per task (Docker first, stronger VM/microVM later)
+2. Durable browser workers + reconnect/resume
 3. Repository map/index and codebase-aware planning
-4. GitHub branch/commit/PR automation with review checkpoints
-5. Isolated execution workers (Docker first, stronger VM/microVM later)
-6. Deployment/hosting service with logs, health checks, domains and TLS
-7. Project/conversation/repository memory
-8. OpenManus-RL trajectory capture, evaluation and training integration
+4. Deployment/hosting service for built apps (logs, health checks, domains, TLS)
+5. Multi-agent roles (planner / coder / reviewer)
+6. Project/conversation/repository memory
+7. OpenManus-RL trajectory capture, evaluation and training integration
 
 ## v0.6 — Autonomous coding loop
 
@@ -54,3 +53,21 @@ Implemented:
 - up to three repair cycles driven by concrete failing command output
 - task only reaches `SUCCEEDED` after validation passes; otherwise it ends as validation-exhausted failure
 - validation lifecycle events are visible through the existing task event stream
+
+## v0.7 — Autonomous engineer loop, human-in-the-loop, GitHub automation
+
+Implemented:
+- `PlatformManus` agent with workspace-confined bash/python/file tools, per-command
+  timeouts and credential-scrubbed environments; project venv/node_modules on PATH
+- the agent drives git itself through `platform_git` (status/diff/log/init/branch/
+  commit/push/pull request/publish new repo); token only via short-lived askpass
+- human channel: `ask_human` questions with in-UI replies, live messages injected
+  into the running agent, stop/cancel and retry
+- validation after every pass with repair cycles; dependency setup cached per lockfile
+- shared browser: one session per project for agent and human, click-on-screenshot
+  and keyboard takeover, screenshots given to vision-capable models
+- model adapter: vision/reasoning capability detection with env overrides, fail-fast
+  on permanent provider errors, pre-flight configuration check with setup hint
+- resumable SSE (`Last-Event-ID`), `/api/status`, cancelled status, restart recovery
+- new three-column UI: projects/history, live activity feed, browser + GitHub/files
+- container ships Node.js 22, npm, build tools, git, Chromium; Render plan 1c-2g

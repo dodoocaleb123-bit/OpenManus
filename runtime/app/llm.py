@@ -1,9 +1,14 @@
 import math
+import os
+import re
 from typing import Dict, List, Optional, Union
 
 import tiktoken
 from openai import (
     APIError,
+    BadRequestError,
+    NotFoundError,
+    PermissionDeniedError,
     AsyncAzureOpenAI,
     AsyncOpenAI,
     AuthenticationError,
@@ -13,6 +18,7 @@ from openai import (
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
@@ -40,6 +46,86 @@ MULTIMODAL_MODELS = [
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
 ]
+
+# Model-family patterns. The exact-name lists above only covered 2024 models,
+# so every newer model (Claude 4.x, GPT-4.1/5, Gemini, ...) had its browser
+# screenshots silently stripped and was sent parameters it rejects.
+# Matched against the lower-cased model name with any provider prefix removed
+# (e.g. "anthropic/claude-sonnet-4-5" or "us.anthropic.claude-...").
+_VISION_MODEL_PATTERNS = (
+    r"gpt-4o", r"gpt-4\.1", r"gpt-4\.5", r"gpt-4-turbo", r"gpt-4-vision", r"gpt-5",
+    r"chatgpt-4o", r"^o1(?!-mini)", r"^o3(?!-mini)", r"^o4",
+    r"^claude-",  # every Claude model since Claude 3 accepts images (sonnet-5, opus-5.5, fable-5-1, ...)
+    r"gemini", r"gemma-3", r"pixtral", r"llava", r"qwen.*vl", r"grok-.*vision", r"grok-4",
+    r"llama-3\.2-.*vision", r"llama-4", r"mistral-(medium|small)-3", r"glm-4.*v", r"kimi-k2",
+    r"nova-(lite|pro|premier)",
+)
+# Reasoning models reject `max_tokens` (need `max_completion_tokens`) and any
+# non-default temperature.
+_REASONING_MODEL_PATTERNS = (r"^o\d", r"^gpt-5(?!.*chat)")
+
+
+def _normalised_model(model: str) -> str:
+    name = (model or "").lower().strip()
+    # OpenRouter / LiteLLM style: "openai/gpt-4.1", "anthropic/claude-sonnet-4.5"
+    name = name.rsplit("/", 1)[-1]
+    # Bedrock style: "us.anthropic.claude-..." / "anthropic.claude-...:0"
+    if "anthropic." in name:
+        name = name.split("anthropic.", 1)[1]
+    return name
+
+
+def _env_flag(name: str) -> Optional[bool]:
+    value = os.environ.get(name, "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def model_supports_images(model: str) -> bool:
+    """Whether image content (browser screenshots) can be sent to ``model``.
+
+    ``LLM_SUPPORTS_IMAGES=true|false`` overrides detection for unusual models.
+    """
+    override = _env_flag("LLM_SUPPORTS_IMAGES")
+    if override is not None:
+        return override
+    if model in MULTIMODAL_MODELS:
+        return True
+    name = _normalised_model(model)
+    return any(re.search(p, name) for p in _VISION_MODEL_PATTERNS)
+
+
+def is_reasoning_model(model: str) -> bool:
+    """``LLM_REASONING_MODEL=true|false`` overrides detection."""
+    override = _env_flag("LLM_REASONING_MODEL")
+    if override is not None:
+        return override
+    if model in REASONING_MODELS:
+        return True
+    name = _normalised_model(model)
+    return any(re.search(p, name) for p in _REASONING_MODEL_PATTERNS)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry transient failures only.
+
+    A wrong API key, unknown model or malformed request will not succeed on
+    retry; retrying them six times with exponential backoff made a
+    misconfigured deployment take minutes to report the real error.
+    """
+    if isinstance(exc, (TokenLimitExceeded, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError)):
+        return False
+    return isinstance(exc, Exception)
+
+
+class _ApproxTokenizer:
+    """~4 characters per token; only used when tiktoken encodings can't be loaded."""
+
+    def encode(self, text: str) -> list[int]:
+        return [0] * max(1, (len(text) + 3) // 4) if text else []
 
 
 class TokenCounter:
@@ -211,7 +297,17 @@ class LLM:
                 self.tokenizer = tiktoken.encoding_for_model(self.model)
             except KeyError:
                 # If the model is not in tiktoken's presets, use cl100k_base as default
-                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+                try:
+                    self.tokenizer = tiktoken.get_encoding("cl100k_base")
+                except Exception as exc:
+                    logger.warning(f"tiktoken encoding unavailable ({exc}); using approximate token counts")
+                    self.tokenizer = _ApproxTokenizer()
+            except Exception as exc:
+                # tiktoken downloads encodings on first use; without network (and
+                # without the build-time cache) token counting degrades to an
+                # estimate instead of making every agent run crash.
+                logger.warning(f"tiktoken encoding unavailable ({exc}); using approximate token counts")
+                self.tokenizer = _ApproxTokenizer()
 
             if self.api_type == "azure":
                 self.client = AsyncAzureOpenAI(
@@ -354,9 +450,7 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=retry_if_exception(_is_retryable),  # permanent errors fail fast
     )
     async def ask(
         self,
@@ -385,7 +479,7 @@ class LLM:
         """
         try:
             # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+            supports_images = model_supports_images(self.model)
 
             # Format system and user messages with image support check
             if system_msgs:
@@ -408,7 +502,7 @@ class LLM:
                 "messages": messages,
             }
 
-            if self.model in REASONING_MODELS:
+            if is_reasoning_model(self.model):
                 params["max_completion_tokens"] = self.max_tokens
             else:
                 params["max_tokens"] = self.max_tokens
@@ -481,9 +575,7 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=retry_if_exception(_is_retryable),  # permanent errors fail fast
     )
     async def ask_with_images(
         self,
@@ -515,9 +607,9 @@ class LLM:
         try:
             # For ask_with_images, we always set supports_images to True because
             # this method should only be called with models that support images
-            if self.model not in MULTIMODAL_MODELS:
+            if not model_supports_images(self.model):
                 raise ValueError(
-                    f"Model {self.model} does not support images. Use a model from {MULTIMODAL_MODELS}"
+                    f"Model {self.model} does not support images. Set LLM_SUPPORTS_IMAGES=true if it does."
                 )
 
             # Format messages with image support
@@ -580,7 +672,7 @@ class LLM:
             }
 
             # Add model-specific parameters
-            if self.model in REASONING_MODELS:
+            if is_reasoning_model(self.model):
                 params["max_completion_tokens"] = self.max_tokens
             else:
                 params["max_tokens"] = self.max_tokens
@@ -637,9 +729,7 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=retry_if_exception(_is_retryable),  # permanent errors fail fast
     )
     async def ask_tool(
         self,
@@ -678,7 +768,7 @@ class LLM:
                 raise ValueError(f"Invalid tool_choice: {tool_choice}")
 
             # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+            supports_images = model_supports_images(self.model)
 
             # Format messages
             if system_msgs:
@@ -720,7 +810,7 @@ class LLM:
                 **kwargs,
             }
 
-            if self.model in REASONING_MODELS:
+            if is_reasoning_model(self.model):
                 params["max_completion_tokens"] = self.max_tokens
             else:
                 params["max_tokens"] = self.max_tokens
