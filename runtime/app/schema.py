@@ -43,12 +43,30 @@ class Function(BaseModel):
     arguments: str
 
 
+def _tool_call_extra_content(call: Any) -> Optional[dict]:
+    """Provider metadata that must be replayed with this tool call.
+
+    Gemini 3 returns ``extra_content.google.thought_signature`` on each tool
+    call and rejects the next request with HTTP 400 if that field is missing.
+    The OpenAI SDK does not declare ``extra_content``, so the value is stored
+    on ``model_extra`` rather than as a typed attribute.
+    """
+    extra = getattr(call, "extra_content", None)
+    if not isinstance(extra, dict):
+        model_extra = getattr(call, "model_extra", None)
+        if isinstance(model_extra, dict):
+            extra = model_extra.get("extra_content")
+    return extra if isinstance(extra, dict) else None
+
+
 class ToolCall(BaseModel):
     """Represents a tool/function call in a message"""
 
     id: str
     type: str = "function"
     function: Function
+    # Omitted from the outbound payload when unset. See Message.to_dict.
+    extra_content: Optional[dict] = None
 
 
 class Message(BaseModel):
@@ -87,7 +105,12 @@ class Message(BaseModel):
         if self.content is not None:
             message["content"] = self.content
         if self.tool_calls is not None:
-            message["tool_calls"] = [tool_call.dict() for tool_call in self.tool_calls]
+            # exclude_none so extra_content is sent only when the provider
+            # returned it. A null field is not a substitute for Gemini's
+            # thought_signature, and other providers should not see it.
+            message["tool_calls"] = [
+                tool_call.model_dump(exclude_none=True) for tool_call in self.tool_calls
+            ]
         if self.name is not None:
             message["name"] = self.name
         if self.tool_call_id is not None:
@@ -142,11 +165,22 @@ class Message(BaseModel):
             tool_calls: Raw tool calls from LLM
             content: Optional message content
             base64_image: Optional base64 encoded image
+
+        Copies ``extra_content`` from each call so Gemini 3 thought signatures
+        survive the next request. OpenAI SDK objects keep that field in
+        ``model_extra``.
         """
-        formatted_calls = [
-            {"id": call.id, "function": call.function.model_dump(), "type": "function"}
-            for call in tool_calls
-        ]
+        formatted_calls = []
+        for call in tool_calls:
+            formatted: dict = {
+                "id": call.id,
+                "function": call.function.model_dump(),
+                "type": "function",
+            }
+            extra_content = _tool_call_extra_content(call)
+            if extra_content is not None:
+                formatted["extra_content"] = extra_content
+            formatted_calls.append(formatted)
         return cls(
             role=Role.ASSISTANT,
             content=content,
