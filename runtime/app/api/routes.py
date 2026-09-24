@@ -129,7 +129,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         llm = llm_status()
         return {
             "llm": {k: llm.get(k) for k in ("configured", "problem", "model", "api_type", "supports_images")},
-            "github": {"token_configured": bool(os.getenv("GITHUB_TOKEN"))},
+            "github": {
+                "token_configured": bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN")),
+                "classic_fallback_configured": bool(os.getenv("GITHUB_CLASSIC_TOKEN")),
+            },
             "auth": {"enabled": bool(os.getenv("PLATFORM_PASSWORD"))},
         }
 

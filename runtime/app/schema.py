@@ -49,6 +49,21 @@ class ToolCall(BaseModel):
     id: str
     type: str = "function"
     function: Function
+    # Provider-specific data attached to the call that must be echoed back
+    # verbatim, e.g. Gemini's {"google": {"thought_signature": "..."}}. Gemini 3
+    # rejects follow-up requests whose tool calls lost their thought signature.
+    extra_content: Optional[dict] = None
+
+
+def _extra_content(call: Any) -> Optional[dict]:
+    """Provider extras (Gemini thought signatures) from an SDK or local tool call."""
+    extra = getattr(call, "extra_content", None)
+    if extra is None:
+        model_extra = getattr(call, "model_extra", None) or {}
+        extra = model_extra.get("extra_content")
+    if extra is None and isinstance(call, dict):
+        extra = call.get("extra_content")
+    return extra if isinstance(extra, dict) and extra else None
 
 
 class Message(BaseModel):
@@ -87,7 +102,9 @@ class Message(BaseModel):
         if self.content is not None:
             message["content"] = self.content
         if self.tool_calls is not None:
-            message["tool_calls"] = [tool_call.dict() for tool_call in self.tool_calls]
+            message["tool_calls"] = [
+                tool_call.model_dump(exclude_none=True) for tool_call in self.tool_calls
+            ]
         if self.name is not None:
             message["name"] = self.name
         if self.tool_call_id is not None:
@@ -143,10 +160,13 @@ class Message(BaseModel):
             content: Optional message content
             base64_image: Optional base64 encoded image
         """
-        formatted_calls = [
-            {"id": call.id, "function": call.function.model_dump(), "type": "function"}
-            for call in tool_calls
-        ]
+        formatted_calls = []
+        for call in tool_calls:
+            entry = {"id": call.id, "function": call.function.model_dump(), "type": "function"}
+            extra = _extra_content(call)
+            if extra:
+                entry["extra_content"] = extra
+            formatted_calls.append(entry)
         return cls(
             role=Role.ASSISTANT,
             content=content,

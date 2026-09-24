@@ -65,6 +65,24 @@ _VISION_MODEL_PATTERNS = (
 _REASONING_MODEL_PATTERNS = (r"^o\d", r"^gpt-5(?!.*chat)")
 
 
+# Gemini 3 is tuned for temperature 1.0; Google warns that lower values cause
+# looping and degraded reasoning, so we never send a lower one.
+_GEMINI3_RE = re.compile(r"gemini-3")
+
+
+def is_gemini3_model(model: str) -> bool:
+    return bool(_GEMINI3_RE.search(_normalised_model(model)))
+
+
+def temperature_params(model: str, temperature: Optional[float]) -> dict:
+    """The `temperature` request field for ``model`` (may be empty)."""
+    if temperature is None:
+        return {}
+    if is_gemini3_model(model) and temperature < 1.0:
+        return {}  # provider default (1.0)
+    return {"temperature": temperature}
+
+
 def _normalised_model(model: str) -> str:
     name = (model or "").lower().strip()
     # OpenRouter / LiteLLM style: "openai/gpt-4.1", "anthropic/claude-sonnet-4.5"
@@ -506,8 +524,11 @@ class LLM:
                 params["max_completion_tokens"] = self.max_tokens
             else:
                 params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
+                params.update(
+                    temperature_params(
+                        self.model,
+                        temperature if temperature is not None else self.temperature,
+                    )
                 )
 
             if not stream:
@@ -676,8 +697,11 @@ class LLM:
                 params["max_completion_tokens"] = self.max_tokens
             else:
                 params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
+                params.update(
+                    temperature_params(
+                        self.model,
+                        temperature if temperature is not None else self.temperature,
+                    )
                 )
 
             # Handle non-streaming request
@@ -814,8 +838,11 @@ class LLM:
                 params["max_completion_tokens"] = self.max_tokens
             else:
                 params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
+                params.update(
+                    temperature_params(
+                        self.model,
+                        temperature if temperature is not None else self.temperature,
+                    )
                 )
 
             params["stream"] = False  # Always use non-streaming for tool requests

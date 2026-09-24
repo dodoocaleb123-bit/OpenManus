@@ -67,7 +67,7 @@ cp config/config.example.toml config/config.toml   # model + API key (vision-cap
 python run_platform.py                              # http://127.0.0.1:8000
 ```
 
-Optional: `GITHUB_TOKEN` (repo scope), `PLATFORM_PASSWORD` (Basic auth),
+Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fallback, `PLATFORM_PASSWORD` (Basic auth),
 `PLATFORM_DATA_DIR` (database + workspaces location, default `workspace/`).
 
 ## Tests
