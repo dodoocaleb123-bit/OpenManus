@@ -18,8 +18,6 @@ services:
     dockerContext: ./runtime
     healthCheckPath: /api/health
     autoDeployTrigger: commit
-    # Give in-flight agent tasks a moment to checkpoint on redeploys.
-    maxShutdownDelaySeconds: 60
     # SQLite database + per-project workspaces (incl. node_modules / .venv). Without
     # this, all projects and task history are wiped on every deploy/restart.
     # $0.25/GB/month. Size can grow later, never shrink.
