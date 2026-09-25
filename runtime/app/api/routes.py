@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from io import BytesIO
 import json
 import os
 import time
@@ -11,6 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from openai import RateLimitError
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 from tenacity import RetryError
 
@@ -40,6 +42,30 @@ def _rate_limit_exception(exc: BaseException) -> bool:
         last = exc.last_attempt.exception()
         return bool(last and (isinstance(last, RateLimitError) or last.__class__.__name__ == "RateLimitError"))
     return False
+
+
+def _image_payload(path: Path, content_type: str | None) -> tuple[bytes, str]:
+    """Return a bounded image payload suitable for a vision API request."""
+    raw = path.read_bytes()
+    mime = content_type or "image/jpeg"
+    if len(raw) <= 5 * 1024 * 1024 and mime != "image/svg+xml":
+        try:
+            with Image.open(BytesIO(raw)) as image:
+                if max(image.size) <= 2048:
+                    return raw, mime
+        except Exception:
+            return raw, mime
+    if mime == "image/svg+xml":
+        return raw, mime
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=82, optimize=True)
+            return output.getvalue(), "image/jpeg"
+    except Exception:
+        return raw, mime
 
 
 class ProjectCreate(BaseModel):
@@ -298,10 +324,12 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             ][-4:]
             if image_uploads and messages:
                 latest = image_uploads[-1]
-                raw = await asyncio.to_thread(Path(latest.stored_path).read_bytes)
+                raw, image_mime = await asyncio.to_thread(
+                    _image_payload, Path(latest.stored_path), latest.content_type
+                )
                 messages[-1]["content"] += f"\nAttached image: {latest.filename}"
                 messages[-1]["base64_image"] = base64.b64encode(raw).decode("ascii")
-                messages[-1]["base64_image_mime"] = latest.content_type or "image/jpeg"
+                messages[-1]["base64_image_mime"] = image_mime
             system = {
                 "role": "system",
                 "content": (
