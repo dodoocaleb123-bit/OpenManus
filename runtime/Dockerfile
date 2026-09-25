@@ -1,7 +1,7 @@
 # OpenManus Platform — production image.
 #
 # One container = the platform (FastAPI API + web UI) + the agent's "computer":
-# Python 3.12, Node.js 22 + npm, git, a C/C++ toolchain and headless Chromium.
+# Python 3.11, Node.js 22 + npm, git, a C/C++ toolchain and headless Chromium.
 # The agent builds, runs and tests projects inside this container.
 #
 # Build context is this directory (runtime/). Referenced by ../render.yaml.
@@ -14,9 +14,9 @@
 # glibc/libstdc++ match); copying it avoids a third-party apt repository.
 FROM node:22-bookworm-slim AS node
 
-# Pinned to bookworm: playwright 1.51's `install --with-deps` targets Debian 12
-# (plain python:3.12-slim is Debian 13, which it cannot install deps for).
-FROM python:3.12-slim-bookworm
+# Pinned to bookworm: Playwright 1.51 targets Debian 12. Python 3.11 is used
+# because it has compatible greenlet wheels across Docker Desktop architectures.
+FROM python:3.11-slim-bookworm
 
 # PLAYWRIGHT_BROWSERS_PATH  Chromium lives at a fixed, user-independent path.
 # TIKTOKEN_CACHE_DIR        Encodings are pre-baked below so the first task needs no download.
