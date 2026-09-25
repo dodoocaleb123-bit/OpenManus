@@ -134,7 +134,7 @@ def _is_retryable(exc: BaseException) -> bool:
     retry; retrying them six times with exponential backoff made a
     misconfigured deployment take minutes to report the real error.
     """
-    if isinstance(exc, (TokenLimitExceeded, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError)):
+    if isinstance(exc, (TokenLimitExceeded, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError, RateLimitError)):
         return False
     return isinstance(exc, Exception)
 
@@ -440,17 +440,19 @@ class LLM:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{message['base64_image']}"
+                            "url": f"data:{message.get('base64_image_mime', 'image/jpeg')};base64,{message['base64_image']}"
                             },
                         }
                     )
 
                     # Remove the base64_image field
                     del message["base64_image"]
+                    message.pop("base64_image_mime", None)
                 # If model doesn't support images but message has base64_image, handle gracefully
                 elif not supports_images and message.get("base64_image"):
                     # Just remove the base64_image field and keep the text content
                     del message["base64_image"]
+                    message.pop("base64_image_mime", None)
 
                 if "content" in message or "tool_calls" in message:
                     formatted_messages.append(message)

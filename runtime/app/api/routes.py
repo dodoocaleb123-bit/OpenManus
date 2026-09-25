@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import time
@@ -9,7 +10,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from openai import RateLimitError
 from pydantic import BaseModel, Field
+from tenacity import RetryError
 
 from app.llm import LLM
 from app.platform.git import GitError, GitWorkspace
@@ -25,6 +28,18 @@ from app.platform.store import PlatformStore
 # browser's EventSource reconnects with Last-Event-ID, resuming seamlessly.
 SSE_HEARTBEAT_INTERVAL = 20.0
 SSE_MAX_LIFETIME = 840.0
+
+
+def _rate_limit_exception(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    if "rate limit" in message or "quota" in message or "too many requests" in message:
+        return True
+    if isinstance(exc, RateLimitError) or exc.__class__.__name__ == "RateLimitError":
+        return True
+    if isinstance(exc, RetryError):
+        last = exc.last_attempt.exception()
+        return bool(last and (isinstance(last, RateLimitError) or last.__class__.__name__ == "RateLimitError"))
+    return False
 
 
 class ProjectCreate(BaseModel):
@@ -45,6 +60,7 @@ class TaskMessage(BaseModel):
 
 class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=4)
 
 
 class GitConnect(BaseModel):
@@ -273,6 +289,19 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
             history = await asyncio.to_thread(store.list_chat_messages, project_id, 80)
             messages = [{"role": item.role, "content": item.content} for item in history]
+            uploads = await asyncio.to_thread(store.list_uploaded_files, project_id)
+            image_uploads = [
+                item for item in uploads
+                if item.id in set(body.attachment_ids)
+                and (item.content_type or "").startswith("image/")
+                and Path(item.stored_path).is_file()
+            ][-4:]
+            if image_uploads and messages:
+                latest = image_uploads[-1]
+                raw = await asyncio.to_thread(Path(latest.stored_path).read_bytes)
+                messages[-1]["content"] += f"\nAttached image: {latest.filename}"
+                messages[-1]["base64_image"] = base64.b64encode(raw).decode("ascii")
+                messages[-1]["base64_image_mime"] = latest.content_type or "image/jpeg"
             system = {
                 "role": "system",
                 "content": (
@@ -282,12 +311,27 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "answer questions. Do not claim to have edited files, run commands, browsed pages, or changed "
                     "GitHub unless the user switches to Build mode and asks the autonomous coding agent to do it. "
                     "If the user wants implementation, explain that they can switch to Build mode and submit the "
-                    "request there."
-                ).format(name=project.name, workspace=project.workspace),
+                    "request there. Uploaded files in this project: {uploads}. Images attached to the latest "
+                    "user message should be inspected directly."
+                ).format(
+                    name=project.name,
+                    workspace=project.workspace,
+                    uploads=", ".join(item.filename for item in uploads) or "none",
+                ),
             }
             try:
                 answer = await LLM().ask(messages, system_msgs=[system], stream=False)
+            except RateLimitError as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail="The Gemini API rate limit or quota was reached. Please wait, check your Gemini API quota, or try again later.",
+                ) from exc
             except Exception as exc:
+                if _rate_limit_exception(exc):
+                    raise HTTPException(
+                        status_code=429,
+                        detail="The Gemini API rate limit or quota was reached. Please wait, check your Gemini API quota, or try again later.",
+                    ) from exc
                 raise HTTPException(status_code=502, detail=f"Chat model request failed: {exc}") from exc
             assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", answer.strip())
             return {"user": user_message, "assistant": assistant_message}
