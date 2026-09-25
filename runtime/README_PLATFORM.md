@@ -7,11 +7,20 @@ the agent.
 
 Deployment: see [`../DEPLOY.md`](../DEPLOY.md). Roadmap: [`BUILD_PLAN.md`](BUILD_PLAN.md).
 
-## Chat and Build modes
+## Unified Assistant
 
-Each project now has two modes in the web UI. **Chat mode** is a persistent Gemini/OpenAI-compatible conversation: messages and replies are stored in SQLite and restored when the project is reopened or the server restarts. Use it to ask questions, discuss ideas, explain code, or plan a feature. **Build mode** is the autonomous coding workflow: the agent plans, edits files, runs tools, validates the project, repairs failures, and can work with the browser and GitHub.
+Each project now has one persistent assistant composer with an action selector:
 
-Switch to Build mode when you want the agent to make changes. Chat mode deliberately does not claim to have edited files or run commands; this keeps conversational planning separate from implementation.
+- **Discuss** answers questions without changing project files.
+- **Inspect project** starts a read-only task that analyzes the repository and
+  reports findings without intentional edits, commits, or pushes.
+- **Make changes** starts the autonomous coding workflow for implementation,
+  testing, and project changes.
+
+The paperclip button is in the lower-left of the composer. Selected uploads
+appear as attachment chips and are sent with the next Discuss message. For
+Inspect and Make changes, uploads remain in the project workspace and the task
+is told to inspect them when relevant.
 
 ## How a build task runs (v0.7)
 
