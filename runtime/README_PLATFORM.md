@@ -12,6 +12,10 @@ Deployment: see [`../DEPLOY.md`](../DEPLOY.md). Roadmap: [`BUILD_PLAN.md`](BUILD
 Each project now has one persistent assistant composer with an action selector:
 
 - **Discuss** answers questions without changing project files.
+- Discuss mode receives a bounded, read-only snapshot of the project tree and
+  common architecture files such as README, package manifests, Dockerfiles,
+  and dependency files, so it can explain a cloned repository without a mode
+  switch. Secrets and generated directories are excluded.
 - **Inspect project** starts a read-only task that analyzes the repository and
   reports findings without intentional edits, commits, or pushes.
 - **Make changes** starts the autonomous coding workflow for implementation,

@@ -6,10 +6,13 @@ from app.server import create_app
 
 
 class FakeChatLLM:
+    last_system = None
+
     def __init__(self, *args, **kwargs):
         pass
 
     async def ask(self, messages, system_msgs=None, stream=False):
+        FakeChatLLM.last_system = system_msgs
         user_messages = [m["content"] for m in messages if m["role"] == "user"]
         return f"Gemini reply to: {user_messages[-1]} (turns={len(user_messages)})"
 
@@ -47,7 +50,23 @@ def test_project_chat_rejects_unknown_project(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
     client = TestClient(create_app(tmp_path, check_llm=False))
     assert client.get("/api/projects/missing/chat").status_code == 404
-    assert client.post("/api/projects/missing/chat", json={"message": "Hi"}).status_code == 404
+    assert client.post(f"/api/projects/missing/chat", json={"message": "Hi"}).status_code == 404
+
+
+def test_project_chat_includes_read_only_workspace_context(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "repo"}).json()
+    workspace = tmp_path / "projects" / project["id"]
+    (workspace / "README.md").write_text("Repository architecture overview", encoding="utf-8")
+    (workspace / "app.py").write_text("print('hello')", encoding="utf-8")
+    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Explain the architecture"})
+    assert response.status_code == 200
+    system = FakeChatLLM.last_system[0]["content"]
+    assert "README.md" in system
+    assert "Repository architecture overview" in system
+    assert "app.py" in system
 
 
 def test_project_chat_reports_model_configuration_problem(tmp_path, monkeypatch):

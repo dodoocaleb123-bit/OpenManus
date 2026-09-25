@@ -68,6 +68,34 @@ def _image_payload(path: Path, content_type: str | None) -> tuple[bytes, str]:
         return raw, mime
 
 
+def _workspace_context(root: Path) -> str:
+    """Build a bounded, secret-aware snapshot for read-only conversational inspection."""
+    ignored = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
+    secret_names = {".env", ".env.local", "config.toml", "config.json"}
+    files: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or any(part in ignored for part in path.relative_to(root).parts):
+            continue
+        if path.name in secret_names or path.name.endswith(".sqlite"):
+            continue
+        files.append(path)
+    tree = "\n".join(str(path.relative_to(root)) for path in files[:300]) or "(workspace has no readable files)"
+    sections = [f"Repository file tree (bounded):\n{tree}"]
+    preferred = ("README.md", "README", "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod", "Dockerfile")
+    total = 0
+    for path in files:
+        if path.name not in preferred or total >= 120_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        excerpt = text[: 120_000 - total]
+        sections.append(f"\n--- {path.relative_to(root)} ---\n{excerpt}")
+        total += len(excerpt)
+    return "\n".join(sections)
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     repository: str | None = None
@@ -330,6 +358,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 messages[-1]["content"] += f"\nAttached image: {latest.filename}"
                 messages[-1]["base64_image"] = base64.b64encode(raw).decode("ascii")
                 messages[-1]["base64_image_mime"] = image_mime
+            workspace_context = await asyncio.to_thread(_workspace_context, Path(project.workspace))
             system = {
                 "role": "system",
                 "content": (
@@ -338,13 +367,15 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "Answer naturally and concisely. You can discuss ideas, explain code, plan features, and "
                     "answer questions. Do not claim to have edited files, run commands, browsed pages, or changed "
                     "GitHub unless the user switches to Build mode and asks the autonomous coding agent to do it. "
-                    "If the user wants implementation, explain that they can switch to Build mode and submit the "
-                    "request there. Uploaded files in this project: {uploads}. Images attached to the latest "
-                    "user message should be inspected directly."
+                    "If the user wants implementation, explain that they can choose Make changes in the assistant "
+                    "action selector. You have read-only repository context below; use it to answer architecture "
+                    "and code questions without claiming to edit files. Uploaded files in this project: {uploads}. "
+                    "Images attached to the latest user message should be inspected directly.\n\n{context}"
                 ).format(
                     name=project.name,
                     workspace=project.workspace,
                     uploads=", ".join(item.filename for item in uploads) or "none",
+                    context=workspace_context,
                 ),
             }
             try:
