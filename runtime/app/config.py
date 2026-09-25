@@ -20,6 +20,7 @@ class LLMSettings(BaseModel):
     model: str = Field(..., description="Model name")
     base_url: str = Field(..., description="API base URL")
     api_key: str = Field(..., description="API key")
+    api_keys: List[str] = Field(default_factory=list, description="Optional local failover key pool")
     max_tokens: int = Field(4096, description="Maximum number of tokens per request")
     max_input_tokens: Optional[int] = Field(
         None,

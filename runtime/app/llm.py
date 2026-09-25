@@ -134,8 +134,11 @@ def _is_retryable(exc: BaseException) -> bool:
     retry; retrying them six times with exponential backoff made a
     misconfigured deployment take minutes to report the real error.
     """
-    if isinstance(exc, (TokenLimitExceeded, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError, RateLimitError)):
+    if isinstance(exc, (TokenLimitExceeded, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError)):
         return False
+    if isinstance(exc, RateLimitError):
+        keys = [item for item in os.environ.get("LLM_API_KEYS", "").replace("\n", ",").split(",") if item.strip()]
+        return len(keys) > 1
     return isinstance(exc, Exception)
 
 
@@ -297,7 +300,10 @@ class LLM:
             self.max_tokens = llm_config.max_tokens
             self.temperature = llm_config.temperature
             self.api_type = llm_config.api_type
-            self.api_key = llm_config.api_key
+            configured_keys = list(getattr(llm_config, "api_keys", []) or [])
+            self.api_keys = list(dict.fromkeys([llm_config.api_key, *configured_keys]))
+            self._api_key_index = 0
+            self.api_key = self.api_keys[0]
             self.api_version = llm_config.api_version
             self.base_url = llm_config.base_url
 
@@ -327,18 +333,24 @@ class LLM:
                 logger.warning(f"tiktoken encoding unavailable ({exc}); using approximate token counts")
                 self.tokenizer = _ApproxTokenizer()
 
-            if self.api_type == "azure":
-                self.client = AsyncAzureOpenAI(
-                    base_url=self.base_url,
-                    api_key=self.api_key,
-                    api_version=self.api_version,
-                )
-            elif self.api_type == "aws":
-                self.client = BedrockClient()
-            else:
-                self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            self.client = self._make_client(self.api_key)
 
             self.token_counter = TokenCounter(self.tokenizer)
+
+    def _make_client(self, api_key: str):
+        if self.api_type == "azure":
+            return AsyncAzureOpenAI(base_url=self.base_url, api_key=api_key, api_version=self.api_version)
+        if self.api_type == "aws":
+            return BedrockClient()
+        return AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+
+    def _rotate_api_key(self) -> None:
+        if len(self.api_keys) <= 1:
+            return
+        self._api_key_index = (self._api_key_index + 1) % len(self.api_keys)
+        self.api_key = self.api_keys[self._api_key_index]
+        self.client = self._make_client(self.api_key)
+        logger.warning("LLM rate limit reached; switched to the next configured API key")
 
     def count_tokens(self, text: str) -> int:
         """Calculate the number of tokens in a text"""
@@ -587,7 +599,8 @@ class LLM:
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                self._rotate_api_key()
+                logger.error("Rate limit exceeded; key failover was attempted when configured.")
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise

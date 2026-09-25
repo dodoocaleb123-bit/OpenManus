@@ -109,13 +109,32 @@ How the platform handles the tokens, whichever option you pick:
 
    | Prompt | Enter |
    | --- | --- |
-   | `LLM_MODEL` | from step 2 |
-   | `LLM_BASE_URL` | from step 2 |
-   | `LLM_API_KEY` | from step 2 |
-   | `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
+| `LLM_MODEL` | from step 2 |
+| `LLM_BASE_URL` | from step 2 |
+| `LLM_API_KEY` | from step 2 |
+| `LLM_API_KEYS` | optional: additional comma- or newline-separated keys kept in the local environment |
+| `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
    | `GITHUB_CLASSIC_TOKEN` | option C only: the classic fallback token (otherwise leave empty) |
 
 4. Click **Apply** (or **Deploy Blueprint**).
+
+### Optional API-key failover
+
+For a local Docker deployment, `LLM_API_KEYS` can contain additional keys:
+
+```env
+LLM_API_KEY=first-key
+LLM_API_KEYS=first-key,second-key,third-key
+```
+
+When a request receives a provider rate-limit response, the app switches to the
+next configured key and retries. Keys are read only from environment variables,
+are not written to Git, and are never displayed in the UI. This is failover,
+not a quota bypass: keys belonging to the same Google Cloud project generally
+share project-level RPM/TPM/RPD limits. A 429 can also mean per-minute request
+limits, token limits, model-specific limits, or a shared project quota even when
+the daily request count is far below its advertised maximum. Images and long
+chat history consume substantially more tokens than a short `hello` message.
 
 ### 6. Watch the first build (about 8–15 minutes)
 

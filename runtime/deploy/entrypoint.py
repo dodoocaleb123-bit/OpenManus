@@ -14,7 +14,8 @@ Configuration sources, in order of precedence:
 
        LLM_MODEL             required   e.g. claude-sonnet-4-5, gpt-4.1
        LLM_BASE_URL          required   e.g. https://api.anthropic.com/v1/
-       LLM_API_KEY           required
+       LLM_API_KEY           required (first/default key)
+       LLM_API_KEYS          optional comma- or newline-separated local failover keys
        LLM_API_TYPE          optional   "" | azure | aws | ollama | jiekou
        LLM_API_VERSION       optional   Azure only
        LLM_MAX_TOKENS        optional   default 8192
@@ -85,6 +86,10 @@ def render_llm_config() -> str:
         f"max_tokens = {toml_num('LLM_MAX_TOKENS', env('LLM_MAX_TOKENS') or '8192', int)}",
         f"temperature = {toml_num('LLM_TEMPERATURE', env('LLM_TEMPERATURE') or '0.0', float)}",
     ]
+    raw_keys = os.environ.get("LLM_API_KEYS", "")
+    api_keys = [item.strip() for item in raw_keys.replace("\n", ",").split(",") if item.strip()]
+    if api_keys:
+        lines.append(f"api_keys = {json.dumps(api_keys)}")
     if env("LLM_MAX_INPUT_TOKENS"):
         lines.append(f"max_input_tokens = {toml_num('LLM_MAX_INPUT_TOKENS', env('LLM_MAX_INPUT_TOKENS'), int)}")
     if env("LLM_API_TYPE"):
