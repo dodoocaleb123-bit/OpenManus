@@ -61,6 +61,16 @@ class ChatMessage(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class UploadedFile(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    project_id: str
+    filename: str
+    stored_path: str
+    content_type: Optional[str] = None
+    size: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class BrowserSessionInfo(BaseModel):
     id: str
     project_id: str

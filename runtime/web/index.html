@@ -107,7 +107,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:4px}
         <details style="margin-top:8px"><summary>Connect an existing repository</summary><button style="margin-top:6px" onclick="loadRepos()">Load my repositories</button><div id="repos" class="list"></div></details>
         <pre id="gitOut" class="list" style="white-space:pre-wrap;margin:8px 0 0"></pre>
       </div>
-      <div id="paneFiles" style="display:none"><button onclick="loadFiles()">Refresh</button><div id="files" class="list" style="margin-top:6px"></div></div>
+      <div id="paneFiles" style="display:none"><div class="row"><input id="uploadInput" type="file" multiple accept=".pdf,.doc,.docx,.odt,.rtf,.xls,.xlsx,.ods,.ppt,.pptx,.txt,.md,.csv,.tsv,.json,.xml,.yaml,.yml,.html,.htm,.zip,.7z,.rar,.tar,.gz,.mp3,.wav,.m4a,.aac,.ogg,.flac,.mp4,.mov,.avi,.mkv,.webm,.mpeg,.mpg,.png,.jpg,.jpeg,.gif,.webp,.svg"/><button onclick="uploadFiles()">Upload</button></div><div class="muted" style="margin-top:6px">Uploads are saved in the project workspace and are available to the Build agent. Archives are stored safely and are not extracted automatically.</div><button style="margin-top:8px" onclick="loadFiles()">Refresh</button><div id="files" class="list" style="margin-top:6px"></div></div>
     </div>
   </div>
 </div>
@@ -207,7 +207,8 @@ async function connectRepo(owner,repo){if(!need())return;out(`Cloning ${owner}/$
 
 /* ---------------- files ---------------- */
 function showTab(t){$('paneGit').style.display=t==='git'?'block':'none';$('paneFiles').style.display=t==='files'?'block':'none';$('tabGit').className=t==='git'?'on':'';$('tabFiles').className=t==='files'?'on':'';if(t==='files')loadFiles()}
-async function loadFiles(){if(!selected)return;const box=$('files');try{const d=await api(`/api/projects/${selected.id}/files`);box.innerHTML='';if(!d.entries.length)box.textContent='Workspace is empty.';d.entries.forEach(e=>{const depth=e.path.split('/').length-1;box.append(el('div','',`${'  '.repeat(depth)}${e.dir?'📁':'📄'} ${e.path.split('/').pop()}`))})}catch(e){box.textContent=e.message}}
+async function loadFiles(){if(!selected)return;const box=$('files');try{const [workspace,uploads]=await Promise.all([api(`/api/projects/${selected.id}/files`),api(`/api/projects/${selected.id}/uploads`)]);box.innerHTML='';if(!workspace.entries.length&&!uploads.length)box.textContent='Workspace is empty.';uploads.forEach(f=>{const row=el('div','repo');const link=el('a','',`${f.filename} (${Math.ceil(f.size/1024)} KB)`);link.href=`/api/projects/${selected.id}/uploads/${f.id}`;link.target='_blank';row.append(link);box.append(row)});workspace.entries.forEach(e=>{const depth=e.path.split('/').length-1;box.append(el('div','',`${'  '.repeat(depth)}${e.dir?'📁':'📄'} ${e.path.split('/').pop()}`))})}catch(e){box.textContent=e.message}}
+async function uploadFiles(){if(!selected)return;const input=$('uploadInput');if(!input.files.length)return alert('Choose one or more files first');const box=$('files');for(const file of input.files){const form=new FormData();form.append('file',file);box.textContent=`Uploading ${file.name}…`;try{const r=await fetch(`/api/projects/${selected.id}/uploads`,{method:'POST',body:form});const d=await r.json();if(!r.ok)throw Error(d.detail||`Upload failed (${r.status})`)}catch(e){box.textContent=e.message;return}}input.value='';await loadFiles()}
 
 loadStatus();loadProjects();
 </script>

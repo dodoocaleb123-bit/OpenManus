@@ -22,6 +22,7 @@ boto3~=1.37.18
 # Web server
 fastapi~=0.115.11
 uvicorn~=0.34.0
+python-multipart~=0.0.20
 
 # Logging
 loguru~=0.7.3

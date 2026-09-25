@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
-from app.platform.models import ChatMessage, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus
+from app.platform.models import ChatMessage, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus, UploadedFile
 
 
 class PlatformStore:
@@ -81,9 +81,20 @@ class PlatformStore:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
+                CREATE TABLE IF NOT EXISTS uploaded_files (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    stored_path TEXT NOT NULL,
+                    content_type TEXT,
+                    size INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_chat_project ON chat_messages(project_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_uploads_project ON uploaded_files(project_id, created_at);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -206,6 +217,32 @@ class PlatformStore:
                 (project_id, limit),
             ).fetchall()
         return [self._chat_message(row) for row in reversed(rows)]
+
+    @staticmethod
+    def _uploaded_file(row: sqlite3.Row) -> UploadedFile:
+        return UploadedFile(
+            id=row["id"], project_id=row["project_id"], filename=row["filename"],
+            stored_path=row["stored_path"], content_type=row["content_type"],
+            size=row["size"], created_at=PlatformStore._dt(row["created_at"]),
+        )
+
+    def add_uploaded_file(self, file: UploadedFile) -> UploadedFile:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO uploaded_files(id,project_id,filename,stored_path,content_type,size,created_at) VALUES(?,?,?,?,?,?,?)",
+                (file.id, file.project_id, file.filename, file.stored_path, file.content_type, file.size, file.created_at.isoformat()),
+            )
+        return file
+
+    def list_uploaded_files(self, project_id: str) -> list[UploadedFile]:
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM uploaded_files WHERE project_id=? ORDER BY created_at, rowid", (project_id,)).fetchall()
+        return [self._uploaded_file(row) for row in rows]
+
+    def get_uploaded_file(self, file_id: str) -> UploadedFile | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM uploaded_files WHERE id=?", (file_id,)).fetchone()
+        return self._uploaded_file(row) if row else None
 
     async def save_task(self, task: Task) -> None:
         async with self._lock:

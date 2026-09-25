@@ -44,6 +44,11 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 - **Durable.** Projects, tasks, events and checkpoints are in SQLite. After a
   restart, interrupted tasks are re-queued; the event stream resumes from
   `Last-Event-ID`.
+- **Project uploads.** The Files panel accepts common PDF, Word, spreadsheet,
+  presentation, text, ZIP/archive, audio, video and image files. Uploads are
+  stored under the project workspace, are visible to the Build agent, and are
+  retained by the persistent Docker volume. Archives are stored but never
+  extracted automatically.
 - **Fail fast on setup problems.** A missing/invalid model configuration fails the
   task immediately with a clear hint; permanent provider errors (401/403/404) are
   not retried.
@@ -54,6 +59,7 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 | --- | --- |
 | Status | `GET /api/health` (no auth), `GET /api/status` (model, GitHub, auth) |
 | Projects | `POST/GET /api/projects`, `GET /api/projects/{id}`, `GET /api/projects/{id}/files` |
+| Uploads | `POST/GET /api/projects/{id}/uploads`, `GET /api/projects/{id}/uploads/{file_id}` |
 | Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent project conversation) |
 | Tasks | `POST /api/tasks` (`{project_id, prompt}`; 409 if one is running in that project), `GET /api/projects/{id}/tasks`, `GET /api/tasks/{id}`, `POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/messages` |
 | Events | `GET /api/tasks/{id}/events` (SSE, resumable), `GET /api/tasks/{id}/events/history` |

@@ -4,9 +4,11 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.llm import LLM
@@ -14,7 +16,7 @@ from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.github import GitHubClient, GitHubError
 from app.platform.llm_check import llm_problem, llm_status
-from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus
+from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus, UploadedFile
 from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning
 from app.platform.store import PlatformStore
 
@@ -70,6 +72,16 @@ class RepositoryPublish(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     private: bool = True
     description: str = Field(default="", max_length=350)
+
+
+UPLOAD_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".odt", ".rtf", ".xls", ".xlsx", ".ods", ".ppt", ".pptx",
+    ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".html", ".htm",
+    ".zip", ".7z", ".rar", ".tar", ".gz", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg", ".png", ".jpg", ".jpeg",
+    ".gif", ".webp", ".svg",
+}
+MAX_UPLOAD_BYTES = max(1, int(os.environ.get("PLATFORM_MAX_UPLOAD_MB", "250"))) * 1024 * 1024
 
 
 async def sse_event_stream(
@@ -180,6 +192,69 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             if len(entries) >= 400:
                 break
         return {"workspace": project.workspace, "entries": entries}
+
+    @router.get("/projects/{project_id}/uploads")
+    async def project_uploads(project_id: str):
+        project_or_404(project_id)
+        return await asyncio.to_thread(store.list_uploaded_files, project_id)
+
+    @router.post("/projects/{project_id}/uploads")
+    async def upload_project_file(project_id: str, file: UploadFile = File(...)):
+        project = project_or_404(project_id)
+        raw_name = file.filename or ""
+        if "\x00" in raw_name:
+            raise HTTPException(status_code=400, detail="Filename contains an invalid character")
+        original_name = Path(raw_name.replace("\\", "/")).name
+        suffix = Path(original_name).suffix.lower()
+        if not original_name or original_name in {".", ".."}:
+            raise HTTPException(status_code=400, detail="A filename is required")
+        if suffix not in UPLOAD_EXTENSIONS:
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: {suffix or 'no extension'}")
+        file_id = uuid4().hex[:12]
+        metadata = UploadedFile(
+            id=file_id,
+            project_id=project_id,
+            filename=original_name,
+            stored_path=str(Path(project.workspace) / "uploads" / f"{file_id}{suffix}"),
+            content_type=file.content_type,
+        )
+        # Keep uploads inside the project workspace; do not extract archives automatically.
+        target = Path(metadata.stored_path).resolve()
+        upload_root = (Path(project.workspace) / "uploads").resolve()
+        if upload_root not in target.parents:
+            raise HTTPException(status_code=400, detail="Invalid upload path")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        total = 0
+        try:
+            with target.open("wb") as destination:
+                while chunk := await file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit")
+                    destination.write(chunk)
+        except HTTPException:
+            target.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Could not save upload: {exc}") from exc
+        finally:
+            await file.close()
+        metadata.size = total
+        await asyncio.to_thread(store.add_uploaded_file, metadata)
+        return metadata
+
+    @router.get("/projects/{project_id}/uploads/{file_id}")
+    async def download_project_file(project_id: str, file_id: str):
+        project = project_or_404(project_id)
+        uploaded = await asyncio.to_thread(store.get_uploaded_file, file_id)
+        if uploaded is None or uploaded.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Uploaded file not found")
+        path = Path(uploaded.stored_path).resolve()
+        root = Path(project.workspace).resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(status_code=404, detail="Uploaded file is missing")
+        return FileResponse(path, media_type=uploaded.content_type or "application/octet-stream", filename=uploaded.filename)
 
     # -------------------------------------------------------------- chat
 
