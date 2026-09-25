@@ -30,6 +30,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache \
     HOST=0.0.0.0 \
@@ -63,7 +65,7 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # `playwright install --with-deps` runs its own apt-get update for Chromium's libraries.
 # app/llm.py uses the model's tiktoken encoding and falls back to cl100k_base.
 COPY requirements-platform.txt ./
-RUN pip install -r requirements-platform.txt \
+RUN pip install --prefer-binary --retries 10 --timeout 300 -r requirements-platform.txt \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* \
     && python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
