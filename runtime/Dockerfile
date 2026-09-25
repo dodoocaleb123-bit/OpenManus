@@ -18,7 +18,9 @@ FROM node:22-bookworm-slim AS node
 # because it has compatible greenlet wheels across Docker Desktop architectures.
 FROM python:3.11-slim-bookworm
 
-# PLAYWRIGHT_BROWSERS_PATH  Chromium lives at a fixed, user-independent path.
+# PLAYWRIGHT_EXECUTABLE_PATH
+#                           Use Debian's Chromium package; this avoids the
+#                           flaky Playwright CDN download during Docker builds.
 # TIKTOKEN_CACHE_DIR        Encodings are pre-baked below so the first task needs no download.
 # HOST / PORT               Bind on all interfaces; hosting platforms such as Render override PORT.
 # OPENMANUS_DISABLE_BROWSER_USE
@@ -32,7 +34,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=300 \
     PIP_RETRIES=10 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium \
     TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache \
     HOST=0.0.0.0 \
     PORT=8000 \
@@ -49,7 +51,7 @@ WORKDIR /app/OpenManus
 # git: project checkouts. build-essential: native npm/pip packages (the agent's compiler).
 # procps: `ps`/`kill` for the agent to manage the dev servers it starts.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl ca-certificates build-essential procps \
+    && apt-get install -y --no-install-recommends git curl ca-certificates build-essential procps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
@@ -62,16 +64,11 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # Dependencies first so this (slow) layer is cached across source-only changes.
 # requirements-platform.txt is the lean runtime subset of requirements.txt; the
 # full file drags in browsergym -> torch + CUDA (~4.6 GB) which the server never uses.
-# `playwright install --with-deps` runs its own apt-get update for Chromium's libraries.
+# Chromium is installed from Debian above; Playwright is used as the automation
+# client and is configured to launch that system browser at runtime.
 # app/llm.py uses the model's tiktoken encoding and falls back to cl100k_base.
 COPY requirements-platform.txt ./
 RUN pip install --prefer-binary --retries 10 --timeout 300 -r requirements-platform.txt \
-    && for attempt in 1 2 3 4 5; do \
-         echo "Installing Playwright Chromium (attempt ${attempt}/5)"; \
-         playwright install --with-deps chromium && break; \
-         if [ "${attempt}" = "5" ]; then exit 1; fi; \
-         sleep 15; \
-       done \
     && rm -rf /var/lib/apt/lists/* \
     && python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
 

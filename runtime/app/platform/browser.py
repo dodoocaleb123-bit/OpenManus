@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,12 +38,16 @@ class BrowserSession:
                 raise BrowserError("Playwright is not installed. Install requirements.txt first.") from exc
             self.playwright = await async_playwright().start()
             try:
-                self.browser = await self.playwright.chromium.launch(
-                    headless=headless,
+                launch_options = {
+                    "headless": headless,
                     # Containers ship a tiny /dev/shm (64 MB on Docker) that
                     # makes Chromium tabs crash on real pages.
-                    args=["--disable-dev-shm-usage", "--disable-gpu"],
-                )
+                    "args": ["--disable-dev-shm-usage", "--disable-gpu"],
+                }
+                executable_path = os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
+                if executable_path:
+                    launch_options["executable_path"] = executable_path
+                self.browser = await self.playwright.chromium.launch(**launch_options)
                 self.context = await self.browser.new_context(viewport={"width": 1440, "height": 900})
                 self.page = await self.context.new_page()
                 if url:
