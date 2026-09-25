@@ -1,4 +1,4 @@
-# OpenManus Platform v0.3
+# OpenManus Platform v0.8
 
 This build extends the OpenManus runtime with a product/platform layer for autonomous software development.
 
@@ -14,6 +14,8 @@ This build extends the OpenManus runtime with a product/platform layer for auton
 - Task attempts/checkpoints.
 - Persistent event history and SSE streaming.
 - Task resume endpoint and task-history UI.
+- Persistent project chat mode alongside autonomous Build mode.
+- Gemini/OpenAI-compatible conversational API with SQLite chat history.
 
 ## Run
 

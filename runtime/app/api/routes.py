@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -8,10 +9,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.llm import LLM
 from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.github import GitHubClient, GitHubError
-from app.platform.llm_check import llm_status
+from app.platform.llm_check import llm_problem, llm_status
 from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus
 from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning
 from app.platform.store import PlatformStore
@@ -36,6 +38,10 @@ class TaskCreate(BaseModel):
 
 
 class TaskMessage(BaseModel):
+    message: str = Field(min_length=1, max_length=20000)
+
+
+class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
 
 
@@ -100,12 +106,16 @@ async def sse_event_stream(
 
 def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRouter:
     router = APIRouter(prefix="/api")
+    chat_locks: dict[str, asyncio.Lock] = {}
 
     def project_or_404(project_id: str):
         project = store.get_project(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         return project
+
+    def chat_lock(project_id: str) -> asyncio.Lock:
+        return chat_locks.setdefault(project_id, asyncio.Lock())
 
     def task_or_404(task_id: str) -> Task:
         task = store.get_task(task_id)
@@ -170,6 +180,42 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             if len(entries) >= 400:
                 break
         return {"workspace": project.workspace, "entries": entries}
+
+    # -------------------------------------------------------------- chat
+
+    @router.get("/projects/{project_id}/chat")
+    async def project_chat(project_id: str):
+        project_or_404(project_id)
+        return await asyncio.to_thread(store.list_chat_messages, project_id, 200)
+
+    @router.post("/projects/{project_id}/chat")
+    async def send_chat_message(project_id: str, body: ChatMessageCreate):
+        project = project_or_404(project_id)
+        if problem := llm_problem():
+            raise HTTPException(status_code=503, detail=problem)
+        text = body.message.strip()
+        async with chat_lock(project_id):
+            user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
+            history = await asyncio.to_thread(store.list_chat_messages, project_id, 80)
+            messages = [{"role": item.role, "content": item.content} for item in history]
+            system = {
+                "role": "system",
+                "content": (
+                    "You are OpenManus Chat, a helpful conversational software-engineering assistant. "
+                    "You are chatting with the owner of project {name}. The project workspace is {workspace}. "
+                    "Answer naturally and concisely. You can discuss ideas, explain code, plan features, and "
+                    "answer questions. Do not claim to have edited files, run commands, browsed pages, or changed "
+                    "GitHub unless the user switches to Build mode and asks the autonomous coding agent to do it. "
+                    "If the user wants implementation, explain that they can switch to Build mode and submit the "
+                    "request there."
+                ).format(name=project.name, workspace=project.workspace),
+            }
+            try:
+                answer = await LLM().ask(messages, system_msgs=[system], stream=False)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"Chat model request failed: {exc}") from exc
+            assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", answer.strip())
+            return {"user": user_message, "assistant": assistant_message}
 
     # ------------------------------------------------------------ github
 

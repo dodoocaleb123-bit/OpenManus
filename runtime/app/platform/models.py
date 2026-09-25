@@ -53,6 +53,14 @@ class Task(BaseModel):
     pending_question: Optional[str] = None
 
 
+class ChatMessage(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    project_id: str
+    role: str
+    content: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class BrowserSessionInfo(BaseModel):
     id: str
     project_id: str

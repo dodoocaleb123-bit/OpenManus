@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
-from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus
+from app.platform.models import ChatMessage, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 
 
 class PlatformStore:
@@ -73,8 +73,17 @@ class PlatformStore:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_chat_project ON chat_messages(project_id, created_at);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -168,6 +177,35 @@ class PlatformStore:
             db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation) VALUES(?,?,?,?,?,?,?,?,?)",
                        (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None))
         return task
+
+    @staticmethod
+    def _chat_message(row: sqlite3.Row) -> ChatMessage:
+        return ChatMessage(
+            id=row["id"], project_id=row["project_id"], role=row["role"],
+            content=row["content"], created_at=PlatformStore._dt(row["created_at"]),
+        )
+
+    def add_chat_message(self, project_id: str, role: str, content: str) -> ChatMessage:
+        if not self.get_project(project_id):
+            raise KeyError(f"Unknown project: {project_id}")
+        if role not in {"user", "assistant", "system"}:
+            raise ValueError("Chat message role must be user, assistant, or system")
+        message = ChatMessage(project_id=project_id, role=role, content=content)
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO chat_messages(id,project_id,role,content,created_at) VALUES(?,?,?,?,?)",
+                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat()),
+            )
+        return message
+
+    def list_chat_messages(self, project_id: str, limit: int = 100) -> list[ChatMessage]:
+        limit = max(1, min(int(limit), 500))
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM chat_messages WHERE project_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+        return [self._chat_message(row) for row in reversed(rows)]
 
     async def save_task(self, task: Task) -> None:
         async with self._lock:

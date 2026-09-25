@@ -7,7 +7,13 @@ the agent.
 
 Deployment: see [`../DEPLOY.md`](../DEPLOY.md). Roadmap: [`BUILD_PLAN.md`](BUILD_PLAN.md).
 
-## How a task runs (v0.7)
+## Chat and Build modes
+
+Each project now has two modes in the web UI. **Chat mode** is a persistent Gemini/OpenAI-compatible conversation: messages and replies are stored in SQLite and restored when the project is reopened or the server restarts. Use it to ask questions, discuss ideas, explain code, or plan a feature. **Build mode** is the autonomous coding workflow: the agent plans, edits files, runs tools, validates the project, repairs failures, and can work with the browser and GitHub.
+
+Switch to Build mode when you want the agent to make changes. Chat mode deliberately does not claim to have edited files or run commands; this keeps conversational planning separate from implementation.
+
+## How a build task runs (v0.7)
 
 ```
 prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
@@ -48,6 +54,7 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 | --- | --- |
 | Status | `GET /api/health` (no auth), `GET /api/status` (model, GitHub, auth) |
 | Projects | `POST/GET /api/projects`, `GET /api/projects/{id}`, `GET /api/projects/{id}/files` |
+| Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent project conversation) |
 | Tasks | `POST /api/tasks` (`{project_id, prompt}`; 409 if one is running in that project), `GET /api/projects/{id}/tasks`, `GET /api/tasks/{id}`, `POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/messages` |
 | Events | `GET /api/tasks/{id}/events` (SSE, resumable), `GET /api/tasks/{id}/events/history` |
 | Git | `GET /api/projects/{id}/git/status\|diff\|log`, `POST …/git/branch\|commit\|push` |
