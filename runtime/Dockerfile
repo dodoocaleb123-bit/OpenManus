@@ -66,7 +66,12 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # app/llm.py uses the model's tiktoken encoding and falls back to cl100k_base.
 COPY requirements-platform.txt ./
 RUN pip install --prefer-binary --retries 10 --timeout 300 -r requirements-platform.txt \
-    && playwright install --with-deps chromium \
+    && for attempt in 1 2 3 4 5; do \
+         echo "Installing Playwright Chromium (attempt ${attempt}/5)"; \
+         playwright install --with-deps chromium && break; \
+         if [ "${attempt}" = "5" ]; then exit 1; fi; \
+         sleep 15; \
+       done \
     && rm -rf /var/lib/apt/lists/* \
     && python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
 
