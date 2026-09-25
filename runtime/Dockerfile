@@ -50,9 +50,21 @@ WORKDIR /app/OpenManus
 
 # git: project checkouts. build-essential: native npm/pip packages (the agent's compiler).
 # procps: `ps`/`kill` for the agent to manage the dev servers it starts.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl ca-certificates build-essential procps chromium \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "120";\nAcquire::https::Timeout "120";\n' \
+      > /etc/apt/apt.conf.d/80openmanus-retries; \
+    for attempt in 1 2 3 4 5; do \
+      echo "Installing Debian dependencies (attempt ${attempt}/5)"; \
+      if apt-get update -o Acquire::Retries=5 \
+          && apt-get install -y --no-install-recommends \
+             git curl ca-certificates build-essential procps chromium; then \
+        break; \
+      fi; \
+      if [ "${attempt}" = "5" ]; then exit 1; fi; \
+      rm -rf /var/lib/apt/lists/*; \
+      sleep 15; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
