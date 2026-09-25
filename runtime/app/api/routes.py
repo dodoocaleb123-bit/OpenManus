@@ -366,9 +366,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "You are chatting with the owner of project {name}. The project workspace is {workspace}. "
                     "Answer naturally and concisely. You can discuss ideas, explain code, plan features, and "
                     "answer questions. Do not claim to have edited files, run commands, browsed pages, or changed "
-                    "GitHub unless the user switches to Build mode and asks the autonomous coding agent to do it. "
-                    "If the user wants implementation, explain that they can choose Make changes in the assistant "
-                    "action selector. You have read-only repository context below; use it to answer architecture "
+                    "GitHub. This is the conversational side of one unified project assistant. If the user asks "
+                    "for implementation, explain the approach or tell them to ask you to make the change in this "
+                    "same conversation; do not pretend that an implementation task has already run. You have "
+                    "read-only repository context below; use it to answer architecture "
                     "and code questions without claiming to edit files. Uploaded files in this project: {uploads}. "
                     "Images attached to the latest user message should be inspected directly.\n\n{context}"
                 ).format(
