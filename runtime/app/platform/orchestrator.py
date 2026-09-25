@@ -212,11 +212,19 @@ class AgentOrchestrator:
             loop = CodingLoop(project.workspace)
             max_cycles = loop.max_repair_cycles
             agent.current_step = 0
+            history = await asyncio.to_thread(self.store.list_chat_messages, task.project_id, 20)
+            conversation = "\n".join(f"{item.role.upper()}: {item.content}" for item in history)
+            conversation = conversation[-30000:]
             await agent.run(
-                f"USER TASK:\n{task.prompt}\n\n"
-                "AUTONOMOUS CODING REQUIREMENT: Inspect the project, implement the requested change, and verify "
-                "your work. Do not stop merely because files were edited; use the available tools to run, test "
-                "and (for UI work) visually check the implementation."
+                f"RECENT PROJECT CONVERSATION:\n{conversation}\n\n"
+                f"CURRENT USER MESSAGE:\n{task.prompt}\n\n"
+                "UNIFIED CONVERSATION REQUIREMENT: Treat this as one continuous project conversation. "
+                "First understand the user's intent. If the user is asking a question, requesting an explanation, "
+                "or asking for inspection only, read the relevant project files and respond without editing files "
+                "or changing project state. If the user explicitly asks to build, modify, fix, refactor, test, "
+                "commit, or otherwise change the project, implement the request and verify it. For any code change, "
+                "inspect the project first, run appropriate tests/builds, and visually check UI work when relevant. "
+                "Do not claim to have changed or verified anything without evidence."
             )
             task.coding_iteration = 1
             task.checkpoint = "implementation_complete"
@@ -248,13 +256,15 @@ class AgentOrchestrator:
 
             summary = agent.final_summary() if hasattr(agent, "final_summary") else "Task completed."
             task.result = summary
+            assistant_reply = summary or task.error or "Task completed."
+            await asyncio.to_thread(store.add_chat_message, task.project_id, "assistant", assistant_reply)
             if task.validation and task.validation.get("passed"):
                 task.status = TaskStatus.SUCCEEDED
                 task.checkpoint = "validated"
-                await emit("task.succeeded", "Implementation completed and validation passed", {"result": summary, "validation": task.validation})
+                await emit("task.succeeded", "Assistant response completed and validation passed", {"result": summary, "validation": task.validation})
             else:
                 task.status = TaskStatus.FAILED
-                task.error = "Implementation completed but automatic validation still fails."
+                task.error = "Automatic validation still fails."
                 task.checkpoint = "validation_exhausted"
                 await emit("task.failed", task.error, {"result": summary, "validation": task.validation})
         except asyncio.CancelledError:

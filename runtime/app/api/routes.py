@@ -526,6 +526,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 detail="An agent task is already running in this project. Send it a message, or cancel it first.",
             )
         task = store.create_task(body.project_id, body.prompt.strip())
+        await asyncio.to_thread(store.add_chat_message, body.project_id, "user", body.prompt.strip())
         if body.browser_session_id:
             task.browser_session_id = body.browser_session_id
             await store.save_task(task)
