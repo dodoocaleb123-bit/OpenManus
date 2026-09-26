@@ -153,11 +153,15 @@ def test_project_chat_requests_structured_mathjax_formatting(tmp_path, monkeypat
     )
     assert response.status_code == 200
     system = FakeChatLLM.last_system[0]["content"]
-    assert "step-by-step tutoring format" in system
-    assert "\\(" in system and "\\[" in system
+    assert "exact polished tutoring style" in system
+    assert "### Given:" in system
+    assert "### Step 1:" in system
+    assert "$$...$$" in system
+    assert "---" in system
+    assert "Absolutely!" in system
     assert "\\frac" in system
     assert "\\boxed" in system
-    assert "### Step 1" in system
+    assert "Do not begin with generic wording" in system
 
 
 def test_math_response_repair_detects_unclosed_latex():
