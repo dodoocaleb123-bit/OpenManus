@@ -276,9 +276,19 @@ class AgentOrchestrator:
             await self.store.emit(Event(task_id=task.id, type="task.cancelled", message="Task cancelled"))
         except Exception as exc:
             logger.exception(f"Task {task.id} failed")
-            task.error = str(exc) or exc.__class__.__name__
+            raw_error = str(exc) or exc.__class__.__name__
+            if "ratelimit" in raw_error.lower() or "rate limit" in raw_error.lower() or "quota" in raw_error.lower():
+                task.error = "The build could not start because the configured LLM provider reported a rate limit or quota error. Check the model API quota, wait, or configure another available API key."
+            else:
+                task.error = raw_error
             task.status = TaskStatus.FAILED
             task.checkpoint = "failed"
+            await asyncio.to_thread(
+                self.store.add_chat_message,
+                task.project_id,
+                "assistant",
+                f"I couldn't complete that build. {task.error}",
+            )
             await self.store.emit(Event(task_id=task.id, type="task.failed", message=task.error, data={"error": task.error}))
         finally:
             task.finished_at = datetime.now(timezone.utc)
