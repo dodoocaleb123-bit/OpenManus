@@ -5,6 +5,7 @@ import base64
 from io import BytesIO
 import json
 import os
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -341,8 +342,23 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         text = body.message.strip()
         async with chat_lock(project_id):
             user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
-            history = await asyncio.to_thread(store.list_chat_messages, project_id, 80)
+            if re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[!. ]*", text, re.IGNORECASE):
+                assistant_message = await asyncio.to_thread(
+                    store.add_chat_message,
+                    project_id,
+                    "assistant",
+                    "Hello! How can I help you today?",
+                )
+                return {"user": user_message, "assistant": assistant_message}
+            history = await asyncio.to_thread(store.list_chat_messages, project_id, 20)
             messages = [{"role": item.role, "content": item.content} for item in history]
+            # Keep casual conversation fast on CPU-only local models. Load
+            # repository context only for questions that clearly need it.
+            code_intent = bool(re.search(
+                r"\b(code|file|project|repository|repo|bug|error|function|class|api|docker|github|html|css|javascript|python|architecture|workspace|test)\b",
+                text,
+                re.IGNORECASE,
+            ))
             uploads = await asyncio.to_thread(store.list_uploaded_files, project_id)
             image_uploads = [
                 item for item in uploads
@@ -358,7 +374,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 messages[-1]["content"] += f"\nAttached image: {latest.filename}"
                 messages[-1]["base64_image"] = base64.b64encode(raw).decode("ascii")
                 messages[-1]["base64_image_mime"] = image_mime
-            workspace_context = await asyncio.to_thread(_workspace_context, Path(project.workspace))
+            workspace_context = await asyncio.to_thread(_workspace_context, Path(project.workspace)) if code_intent else "No repository context was loaded for this general conversational reply."
             system = {
                 "role": "system",
                 "content": (
@@ -380,7 +396,13 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 ),
             }
             try:
-                answer = await LLM().ask(messages, system_msgs=[system], stream=False)
+                answer = await LLM().ask(
+                    messages,
+                    system_msgs=[system],
+                    stream=False,
+                    temperature=0.3,
+                    max_tokens=512,
+                )
             except RateLimitError as exc:
                 raise HTTPException(
                     status_code=429,

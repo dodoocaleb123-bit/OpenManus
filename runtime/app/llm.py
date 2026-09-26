@@ -517,6 +517,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = True,
         temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -561,10 +562,11 @@ class LLM:
                 "messages": messages,
             }
 
+            request_max_tokens = max(64, int(max_tokens)) if max_tokens is not None else self.max_tokens
             if is_reasoning_model(self.model):
-                params["max_completion_tokens"] = self.max_tokens
+                params["max_completion_tokens"] = request_max_tokens
             else:
-                params["max_tokens"] = self.max_tokens
+                params["max_tokens"] = request_max_tokens
                 params.update(
                     temperature_params(
                         self.model,
