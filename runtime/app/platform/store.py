@@ -180,6 +180,34 @@ class PlatformStore:
                        (project.name, project.workspace, project.repository, project.branch, int(project.git_ready), project.id))
         return project
 
+    def rename_project(self, project_id: str, name: str) -> Project:
+        name = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}", name):
+            raise ValueError("Project name may contain letters, numbers, spaces, underscores, dots and hyphens")
+        project = self.get_project(project_id)
+        if not project:
+            raise KeyError(project_id)
+        project.name = name
+        return self.update_project(project)
+
+    def delete_task(self, task_id: str) -> bool:
+        with self._connect() as db:
+            db.execute("DELETE FROM events WHERE task_id=?", (task_id,))
+            result = db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        return result.rowcount > 0
+
+    def delete_project(self, project_id: str) -> str | None:
+        with self._connect() as db:
+            row = db.execute("SELECT workspace FROM projects WHERE id=?", (project_id,)).fetchone()
+            if not row:
+                return None
+            db.execute("DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?)", (project_id,))
+            db.execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM uploaded_files WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM chat_messages WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        return row["workspace"]
+
     def create_task(self, project_id: str, prompt: str) -> Task:
         if not self.get_project(project_id):
             raise KeyError(f"Unknown project: {project_id}")

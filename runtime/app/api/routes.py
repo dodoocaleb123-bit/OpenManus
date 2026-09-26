@@ -6,6 +6,7 @@ from io import BytesIO
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -101,6 +102,10 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     repository: str | None = None
     branch: str | None = None
+
+
+class ProjectRename(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
 
 
 class TaskCreate(BaseModel):
@@ -245,6 +250,27 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.get("/projects/{project_id}")
     async def get_project(project_id: str):
         return project_or_404(project_id)
+
+    @router.patch("/projects/{project_id}")
+    async def rename_project(project_id: str, body: ProjectRename):
+        project_or_404(project_id)
+        try:
+            return store.rename_project(project_id, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.delete("/projects/{project_id}")
+    async def delete_project(project_id: str):
+        project_or_404(project_id)
+        if any(t.project_id == project_id and orchestrator.is_running(t.id) for t in store.tasks.values()):
+            raise HTTPException(status_code=409, detail="Stop the running build before deleting this project.")
+        workspace = store.delete_project(project_id)
+        if workspace:
+            root = Path(workspace).resolve()
+            projects_root = (store.root / "projects").resolve()
+            if root.parent == projects_root and root != projects_root:
+                shutil.rmtree(root, ignore_errors=True)
+        return {"deleted": project_id}
 
     @router.get("/projects/{project_id}/files")
     async def project_files(project_id: str):
@@ -575,6 +601,15 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.get("/tasks/{task_id}")
     async def get_task(task_id: str):
         return task_or_404(task_id)
+
+    @router.delete("/tasks/{task_id}")
+    async def delete_task(task_id: str):
+        task = task_or_404(task_id)
+        if orchestrator.is_running(task_id) or task.status in {TaskStatus.RUNNING, TaskStatus.QUEUED}:
+            raise HTTPException(status_code=409, detail="Stop the running build before deleting it.")
+        if not store.delete_task(task_id):
+            raise HTTPException(status_code=404, detail="Build activity not found")
+        return {"deleted": task_id}
 
     @router.post("/tasks/{task_id}/resume")
     async def resume_task(task_id: str):
