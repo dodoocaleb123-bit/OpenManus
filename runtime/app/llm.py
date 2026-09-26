@@ -360,9 +360,16 @@ class LLM:
         return AsyncOpenAI(api_key=api_key, base_url=self.base_url, timeout=request_timeout)
 
     def _rotate_api_key(self) -> None:
-        # Local-first mode: the first provider failure immediately makes the
-        # configured cloud provider available as a fallback. Subsequent cloud
-        # failures rotate through its own key pool.
+        # Exhaust the active provider's keys first. Only then switch to the
+        # configured fallback provider, whose own pool is also exhausted in
+        # order. Previously the first failure switched providers immediately,
+        # making multi-key vision/heavy-coding pools ineffective.
+        if self._api_key_index + 1 < len(self.api_keys):
+            self._api_key_index += 1
+            self.api_key = self.api_keys[self._api_key_index]
+            self.client = self._make_client(self.api_key)
+            logger.warning("LLM rate limit reached; switched to the next key for the active provider")
+            return
         if not self._using_fallback and self._fallback_config is not None:
             fallback = self._fallback_config
             self._using_fallback = True
@@ -377,14 +384,9 @@ class LLM:
             self._api_key_index = 0
             self.api_key = self.api_keys[0]
             self.client = self._make_client(self.api_key)
-            logger.warning("Local LLM unavailable; switched to the configured cloud fallback")
+            logger.warning("Active provider key pool exhausted; switched to the configured fallback provider")
             return
-        if len(self.api_keys) <= 1:
-            return
-        self._api_key_index = (self._api_key_index + 1) % len(self.api_keys)
-        self.api_key = self.api_keys[self._api_key_index]
-        self.client = self._make_client(self.api_key)
-        logger.warning("LLM rate limit reached; switched to the next configured API key")
+        logger.warning("LLM provider key pool exhausted; no further failover key is configured")
 
     def count_tokens(self, text: str) -> int:
         """Calculate the number of tokens in a text"""
@@ -658,16 +660,15 @@ class LLM:
             logger.exception(f"Validation error")
             raise
         except OpenAIError as oe:
-            if self._fallback_config is not None and not self._using_fallback:
-                self._rotate_api_key()
             logger.exception(f"OpenAI API error")
             if isinstance(oe, AuthenticationError):
+                self._rotate_api_key()
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                if not self._using_fallback:
-                    self._rotate_api_key()
+                self._rotate_api_key()
                 logger.error("Rate limit exceeded; key failover was attempted when configured.")
             elif isinstance(oe, APIError):
+                self._rotate_api_key()
                 logger.error(f"API error: {oe}")
             raise
         except Exception:
@@ -826,16 +827,15 @@ class LLM:
             logger.error(f"Validation error in ask_with_images: {ve}")
             raise
         except OpenAIError as oe:
-            if self._fallback_config is not None and not self._using_fallback:
-                self._rotate_api_key()
             logger.error(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
+                self._rotate_api_key()
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                if not self._using_fallback:
-                    self._rotate_api_key()
+                self._rotate_api_key()
                 logger.error("Rate limit exceeded; rotated to the next configured API key before retry.")
             elif isinstance(oe, APIError):
+                self._rotate_api_key()
                 logger.error(f"API error: {oe}")
             raise
         except Exception as e:
@@ -964,16 +964,15 @@ class LLM:
             logger.error(f"Validation error in ask_tool: {ve}")
             raise
         except OpenAIError as oe:
-            if self._fallback_config is not None and not self._using_fallback:
-                self._rotate_api_key()
             logger.error(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
+                self._rotate_api_key()
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                if not self._using_fallback:
-                    self._rotate_api_key()
+                self._rotate_api_key()
                 logger.error("Rate limit exceeded; rotated to the next configured API key before retry.")
             elif isinstance(oe, APIError):
+                self._rotate_api_key()
                 logger.error(f"API error: {oe}")
             raise
         except Exception as e:
