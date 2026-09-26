@@ -194,7 +194,7 @@ def referenced_images(text: str, uploads: list[UploadedFile], attachment_ids: li
             if index < len(images):
                 selected.append(images[index])
 
-    if re.search(r"\b(this|that|the|last|latest|previous|current)\s+(image|picture|photo)\b|\b(image|picture|photo)\s+(above|attached|shown)\b", lowered):
+    if re.search(r"\b(this|that|the|last|latest|previous|current|uploaded|stored|saved|attached)\s+(image|picture|photo|screenshot)\b|\b(image|picture|photo|screenshot)\s+(above|attached|shown|uploaded|stored|saved)\b", lowered):
         selected.append(images[-1] if images else None)
     selected_ids = list(dict.fromkeys(item.id for item in selected if item))[-4:]
     return [item for item in images if item.id in selected_ids]
