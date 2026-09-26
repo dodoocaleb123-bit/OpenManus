@@ -124,6 +124,7 @@ class TaskMessage(BaseModel):
 class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     attachment_ids: list[str] = Field(default_factory=list, max_length=4)
+    browser_session_id: str | None = None
 
 
 class GitConnect(BaseModel):
@@ -145,6 +146,19 @@ class PullRequestCreate(BaseModel):
     body: str = Field(default="", max_length=60000)
     base: str | None = Field(default=None, max_length=100)
     draft: bool = False
+
+
+def is_build_request(text: str) -> bool:
+    """Return whether a message asks the project agent to take an action."""
+    value = text.strip()
+    if re.search(r"\b(do not|don't|dont|just want .* answer|only answer|without (changing|editing|modifying)|no (code|changes?)|not yet|wait before)\b", value, re.IGNORECASE):
+        return False
+    if re.search(r"^(can|could|would|will|are you able|is it possible)\b", value, re.IGNORECASE) and re.search(r"\?\s*$", value) and not re.search(r"\b(please|go ahead|start|now|in the project|for me)\b", value, re.IGNORECASE):
+        return False
+    return bool(
+        re.search(r"\b(build|create|implement|change|modify|edit|fix|refactor|add|remove|delete|update|write|code|test|commit|push|publish|deploy|branch|pull request|pr|research|browse|website|internet|navigate)\b", value, re.IGNORECASE)
+        or re.search(r"\b(connect|clone)\b.*\b(github|repository|repo)\b|\b(github|repository|repo)\b.*\b(connect|clone|pull|push)\b", value, re.IGNORECASE)
+    )
 
 
 class RepositoryPublish(BaseModel):
@@ -265,6 +279,38 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             raise HTTPException(status_code=404, detail="Task not found")
         task.pending_question = orchestrator.pending_question(task_id)
         return task
+
+    async def launch_task(project_id: str, prompt: str, browser_session_id: str | None = None):
+        """Start the build agent while keeping its messages in the project chat."""
+        if not store.get_project(project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        if browser_session_id:
+            browsers = getattr(orchestrator, "browsers", None)
+            session = browsers.get(browser_session_id) if browsers else None
+            if session is None or session.project_id != project_id:
+                raise HTTPException(status_code=400, detail="Browser session does not belong to this project")
+        running = [
+            task for task in store.tasks.values()
+            if task.project_id == project_id and orchestrator.is_running(task.id)
+        ]
+        if running:
+            raise HTTPException(
+                status_code=409,
+                detail="An agent task is already running in this project. Send a message, or cancel it first.",
+            )
+        task = store.create_task(project_id, prompt.strip())
+        user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", prompt.strip())
+        assistant_message = await asyncio.to_thread(
+            store.add_chat_message,
+            project_id,
+            "assistant",
+            "I’ll work on that in this conversation. I’ll inspect the project, make the requested changes, and verify the result before reporting back.",
+        )
+        if browser_session_id:
+            task.browser_session_id = browser_session_id
+            await store.save_task(task)
+        orchestrator.start(task)
+        return task, user_message, assistant_message
 
     def git_error(exc: Exception) -> HTTPException:
         if isinstance(exc, RuntimeError) and "GITHUB_TOKEN" in str(exc):
@@ -430,6 +476,13 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         project = project_or_404(project_id)
         text = body.message.strip()
         async with chat_lock(project_id):
+            if is_build_request(text):
+                task, user_message, assistant_message = await launch_task(
+                    project_id,
+                    text,
+                    body.browser_session_id,
+                )
+                return {"kind": "task", "user": user_message, "assistant": assistant_message, "task": task}
             user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
             if re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[!. ]*", text, re.IGNORECASE):
                 assistant_message = await asyncio.to_thread(
@@ -680,37 +733,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
 
     @router.post("/tasks")
     async def create_task(body: TaskCreate):
-        if not store.get_project(body.project_id):
-            raise HTTPException(status_code=404, detail="Project not found")
-        # Validate the browser attachment first so a rejected request does not
-        # leave an orphaned task behind.
-        if body.browser_session_id:
-            browsers = getattr(orchestrator, "browsers", None)
-            session = browsers.get(body.browser_session_id) if browsers else None
-            if session is None or session.project_id != body.project_id:
-                raise HTTPException(status_code=400, detail="Browser session does not belong to this project")
-        running = [
-            t for t in store.tasks.values()
-            if t.project_id == body.project_id and orchestrator.is_running(t.id)
-        ]
-        if running:
-            raise HTTPException(
-                status_code=409,
-                detail="An agent task is already running in this project. Send it a message, or cancel it first.",
-            )
-        prompt = body.prompt.strip()
-        task = store.create_task(body.project_id, prompt)
-        await asyncio.to_thread(store.add_chat_message, body.project_id, "user", prompt)
-        await asyncio.to_thread(
-            store.add_chat_message,
-            body.project_id,
-            "assistant",
-            "I’ll work on that in this conversation. I’ll inspect the project, make the requested changes, and verify the result before reporting back.",
-        )
-        if body.browser_session_id:
-            task.browser_session_id = body.browser_session_id
-            await store.save_task(task)
-        orchestrator.start(task)
+        task, _, _ = await launch_task(body.project_id, body.prompt, body.browser_session_id)
         return task
 
     @router.get("/projects/{project_id}/tasks")
