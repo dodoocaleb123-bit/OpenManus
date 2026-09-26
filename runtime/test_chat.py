@@ -69,6 +69,25 @@ def test_project_chat_includes_read_only_workspace_context(tmp_path, monkeypatch
     assert "app.py" in system
 
 
+def test_project_chat_requests_structured_mathjax_formatting(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "math"}).json()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Solve this algebra problem step by step."},
+    )
+    assert response.status_code == 200
+    system = FakeChatLLM.last_system[0]["content"]
+    assert "step-by-step tutoring format" in system
+    assert "\\(" in system and "\\[" in system
+    assert "\\frac" in system
+    assert "\\boxed" in system
+    assert "### Step 1" in system
+
+
 def test_project_chat_reports_model_configuration_problem(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: "LLM is not configured")
     client = TestClient(create_app(tmp_path, check_llm=False))
