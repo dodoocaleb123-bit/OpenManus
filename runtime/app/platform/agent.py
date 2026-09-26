@@ -245,8 +245,10 @@ TOOLS
 - python_execute: run a Python script in the workspace.
 - str_replace_editor: view/create/edit files (relative paths resolve against the workspace).
 - platform_browser: the project's shared browser. The user watches it live and may take over.
-  Use it for research and to test web apps you run locally (http://localhost:<port>). Use `screenshot`
-  to see the page, and judge the visual result critically.
+  Use it for research and to test web apps you run locally (http://localhost:<port>). Before navigating,
+  verify the URL is actually listening from bash. Use `screenshot` to see the page, and judge the visual
+  result critically. A successful shell command or a model-generated statement is not proof that the
+  server is running; the browser result is the proof.
 - web_search: search the internet.
 - platform_git: status/diff/log, init, branches, commit, push, create_pull_request and
   publish_repository (creates a new GitHub repo). Credentials are handled for you.
