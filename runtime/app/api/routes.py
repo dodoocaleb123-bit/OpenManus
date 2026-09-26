@@ -4,6 +4,7 @@ import asyncio
 import base64
 from io import BytesIO
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -294,6 +295,17 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     async def project_uploads(project_id: str):
         project_or_404(project_id)
         return await asyncio.to_thread(store.list_uploaded_files, project_id)
+
+    @router.get("/projects/{project_id}/files/download")
+    async def download_workspace_file(project_id: str, path: str):
+        """Download a regular file from the selected project's workspace."""
+        project = project_or_404(project_id)
+        root = Path(project.workspace).resolve()
+        target = (root / path).resolve()
+        if target == root or root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="Workspace file not found")
+        media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=media_type, filename=target.name)
 
     @router.post("/projects/{project_id}/uploads")
     async def upload_project_file(project_id: str, file: UploadFile = File(...)):
