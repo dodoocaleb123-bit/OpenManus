@@ -526,8 +526,15 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 status_code=409,
                 detail="An agent task is already running in this project. Send it a message, or cancel it first.",
             )
-        task = store.create_task(body.project_id, body.prompt.strip())
-        await asyncio.to_thread(store.add_chat_message, body.project_id, "user", body.prompt.strip())
+        prompt = body.prompt.strip()
+        task = store.create_task(body.project_id, prompt)
+        await asyncio.to_thread(store.add_chat_message, body.project_id, "user", prompt)
+        await asyncio.to_thread(
+            store.add_chat_message,
+            body.project_id,
+            "assistant",
+            "I’ll work on that in this conversation. I’ll inspect the project, make the requested changes, and verify the result before reporting back.",
+        )
         if body.browser_session_id:
             task.browser_session_id = body.browser_session_id
             await store.save_task(task)
@@ -568,6 +575,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         task_or_404(task_id)
         try:
             delivery = await orchestrator.send_message(task_id, body.message)
+            task = store.get_task(task_id)
+            if task:
+                await asyncio.to_thread(store.add_chat_message, task.project_id, "user", body.message.strip())
         except TaskNotRunning as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
