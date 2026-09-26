@@ -22,6 +22,7 @@ def test_rate_limit_retry_requires_a_key_pool(monkeypatch):
         body={},
     )
     monkeypatch.delenv("LLM_API_KEYS", raising=False)
-    assert _is_retryable(error) is False
+    # Retry is bounded even with one key so transient provider throttling can recover.
+    assert _is_retryable(error) is True
     monkeypatch.setenv("LLM_API_KEYS", "key-one,key-two")
     assert _is_retryable(error) is True

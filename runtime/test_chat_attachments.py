@@ -13,7 +13,7 @@ class CapturingLLM:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def ask(self, messages, system_msgs=None, stream=False):
+    async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
         CapturingLLM.captured = messages
         return "I can see the attached image."
 
@@ -22,7 +22,7 @@ class RateLimitedLLM:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def ask(self, messages, system_msgs=None, stream=False):
+    async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
         response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
         raise RateLimitError("quota exceeded", response=response, body={})
 
@@ -47,8 +47,8 @@ def test_chat_sends_uploaded_image_as_vision_content(tmp_path, monkeypatch):
     )
     assert response.status_code == 200
     latest = CapturingLLM.captured[-1]
-    assert latest["base64_image_mime"] == "image/png"
-    assert latest["base64_image"]
+    assert latest["base64_images"][0]["mime"] == "image/png"
+    assert latest["base64_images"][0]["data"]
 
 
 def test_chat_returns_actionable_rate_limit_error(tmp_path, monkeypatch):
@@ -56,6 +56,6 @@ def test_chat_returns_actionable_rate_limit_error(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = make_project(client)
-    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Hello"})
+    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Please answer this question"})
     assert response.status_code == 429
     assert "rate limit or quota" in response.json()["detail"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 from io import BytesIO
 import json
 import mimetypes
@@ -197,6 +198,20 @@ def referenced_images(text: str, uploads: list[UploadedFile], attachment_ids: li
         selected.append(images[-1] if images else None)
     selected_ids = list(dict.fromkeys(item.id for item in selected if item))[-4:]
     return [item for item in images if item.id in selected_ids]
+
+
+def response_needs_continuation(answer: str, finish_reason: str | None) -> bool:
+    """Detect the common provider responses that stop mid-answer."""
+    if (finish_reason or "").lower() in {"length", "max_tokens", "token_limit"}:
+        return True
+    ending = answer.strip().splitlines()[-1].strip() if answer.strip() else ""
+    if not ending:
+        return True
+    return bool(re.search(
+        r"(?:[:;,]|\b(?:and|or|but|because|therefore|so|to|the|a|an|of|is|are|was|were|will|I|I'll|Express|Step\s+\d+\.?)$)",
+        ending,
+        re.IGNORECASE,
+    ))
 
 
 async def sse_event_stream(
@@ -495,7 +510,8 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "asks for implementation, the interface will deliver it to the build workflow. You have "
                     "read-only repository context below; use it to answer architecture and code questions. "
                     "Uploaded files in this project: {uploads}. "
-                    "Only images explicitly attached or referenced by the latest user message should be inspected.\n\n{context}"
+                    "Only images explicitly attached or referenced by the latest user message should be inspected. "
+                    "Finish every solution completely; never stop after a heading, colon, or unfinished sentence.\n\n{context}"
                 ).format(
                     name=project.name,
                     workspace=project.workspace,
@@ -505,13 +521,34 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             }
             try:
                 chat_llm = LLM(config_name="vision") if image_uploads and "vision" in config.llm else LLM()
+                # format_messages removes internal base64 fields while preparing
+                # a request. Keep an untouched copy so a bounded continuation
+                # can include the image again if the provider cuts off early.
+                original_messages = copy.deepcopy(messages)
                 answer = await chat_llm.ask(
-                    messages,
+                    copy.deepcopy(original_messages),
                     system_msgs=[system],
                     stream=False,
                     temperature=0.3,
-                    max_tokens=512,
+                    max_tokens=768 if image_uploads else 512,
                 )
+                for _ in range(2) if image_uploads else range(0):
+                    if not response_needs_continuation(answer, getattr(chat_llm, "last_finish_reason", None)):
+                        break
+                    continuation_messages = copy.deepcopy(original_messages)
+                    continuation_messages.append({"role": "assistant", "content": answer})
+                    continuation_messages.append({
+                        "role": "user",
+                        "content": "Continue the previous answer from exactly where it stopped. "
+                        "Do not repeat the completed text; finish the current step and provide the final answer.",
+                    })
+                    answer += "\n" + await chat_llm.ask(
+                        continuation_messages,
+                        system_msgs=[system],
+                        stream=False,
+                        temperature=0.3,
+                        max_tokens=768 if image_uploads else 512,
+                    )
             except RateLimitError as exc:
                 raise HTTPException(
                     status_code=429,

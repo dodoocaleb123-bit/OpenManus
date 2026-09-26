@@ -11,7 +11,7 @@ class FakeChatLLM:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def ask(self, messages, system_msgs=None, stream=False):
+    async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
         FakeChatLLM.last_system = system_msgs
         user_messages = [m["content"] for m in messages if m["role"] == "user"]
         return f"Gemini reply to: {user_messages[-1]} (turns={len(user_messages)})"
@@ -23,9 +23,9 @@ def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = client.post("/api/projects", json={"name": "chat-demo"}).json()
 
-    first = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Hello"})
+    first = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Tell me something"})
     assert first.status_code == 200
-    assert first.json()["assistant"]["content"] == "Gemini reply to: Hello (turns=1)"
+    assert first.json()["assistant"]["content"] == "Gemini reply to: Tell me something (turns=1)"
 
     second = client.post(f"/api/projects/{project['id']}/chat", json={"message": "What did I say?"})
     assert second.status_code == 200
@@ -34,8 +34,8 @@ def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
     history = client.get(f"/api/projects/{project['id']}/chat")
     assert history.status_code == 200
     assert [(m["role"], m["content"]) for m in history.json()] == [
-        ("user", "Hello"),
-        ("assistant", "Gemini reply to: Hello (turns=1)"),
+        ("user", "Tell me something"),
+        ("assistant", "Gemini reply to: Tell me something (turns=1)"),
         ("user", "What did I say?"),
         ("assistant", "Gemini reply to: What did I say? (turns=2)"),
     ]
@@ -61,7 +61,7 @@ def test_project_chat_includes_read_only_workspace_context(tmp_path, monkeypatch
     workspace = tmp_path / "projects" / project["id"]
     (workspace / "README.md").write_text("Repository architecture overview", encoding="utf-8")
     (workspace / "app.py").write_text("print('hello')", encoding="utf-8")
-    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Explain the architecture"})
+    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Explain the python architecture"})
     assert response.status_code == 200
     system = FakeChatLLM.last_system[0]["content"]
     assert "README.md" in system
@@ -73,6 +73,6 @@ def test_project_chat_reports_model_configuration_problem(tmp_path, monkeypatch)
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: "LLM is not configured")
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = client.post("/api/projects", json={"name": "chat-demo"}).json()
-    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Hello"})
+    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Please answer this question"})
     assert response.status_code == 503
     assert response.json()["detail"] == "LLM is not configured"

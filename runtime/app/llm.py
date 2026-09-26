@@ -300,10 +300,11 @@ class LLM:
             llm_config = llm_config or config.llm
             llm_config = llm_config.get(config_name, llm_config["default"])
             self._config_name = config_name
-            self._fallback_config = (
-                config.llm.get("fallback") or config.llm.get("cloud")
-                if config_name == "default" else None
-            )
+            # Every provider, including the dedicated vision provider, can
+            # use the configured local-to-cloud fallback. Previously this was
+            # limited to ``default``, so image requests routed through
+            # ``vision`` could not fail over.
+            self._fallback_config = config.llm.get("fallback") or config.llm.get("cloud")
             self._using_fallback = False
             self.model = llm_config.model
             self.max_tokens = llm_config.max_tokens
@@ -343,6 +344,7 @@ class LLM:
                 self.tokenizer = _ApproxTokenizer()
 
             self.client = self._make_client(self.api_key)
+            self.last_finish_reason = None
 
             self.token_counter = TokenCounter(self.tokenizer)
 
@@ -556,6 +558,18 @@ class LLM:
             # Check if the model supports images
             supports_images = model_supports_images(self.model)
 
+            # Image chat uses this method too: the route places base64_images
+            # on the latest user message. If the local provider is text-only,
+            # switch before format_messages strips the image payload.
+            has_images = any(
+                isinstance(message, dict)
+                and (message.get("base64_images") or message.get("base64_image"))
+                for message in messages
+            )
+            if has_images and not supports_images and self._fallback_config is not None and not self._using_fallback:
+                self._rotate_api_key()
+                supports_images = model_supports_images(self.model)
+
             # Format system and user messages with image support check
             if system_msgs:
                 system_msgs = self.format_messages(system_msgs, supports_images)
@@ -598,6 +612,8 @@ class LLM:
                 if not response.choices or not response.choices[0].message.content:
                     raise ValueError("Empty or invalid response from LLM")
 
+                self.last_finish_reason = getattr(response.choices[0], "finish_reason", None)
+
                 # Update token counts
                 self.update_token_count(
                     response.usage.prompt_tokens, response.usage.completion_tokens
@@ -609,10 +625,13 @@ class LLM:
             self.update_token_count(input_tokens)
 
             response = await self.client.chat.completions.create(**params, stream=True)
+            self.last_finish_reason = None
 
             collected_messages = []
             completion_text = ""
             async for chunk in response:
+                if getattr(chunk, "choices", None) and getattr(chunk.choices[0], "finish_reason", None):
+                    self.last_finish_reason = chunk.choices[0].finish_reason
                 chunk_message = chunk.choices[0].delta.content or ""
                 collected_messages.append(chunk_message)
                 completion_text += chunk_message
