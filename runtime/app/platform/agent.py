@@ -193,6 +193,17 @@ class WorkspaceEditor(StrReplaceEditor):
         if not p.is_absolute():
             p = (self.workspace / p).resolve()
         if command == "create":
+            # Make retries safe: local models often repeat a create call after a
+            # transient/tool-text error. If the requested file already contains
+            # the requested content, report it as verified instead of failing.
+            requested = kwargs.get("file_text")
+            if p.is_file() and requested is not None:
+                try:
+                    existing = p.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    existing = None
+                if existing == requested:
+                    return f"File already exists at: {p}; existing content matches the requested content and was verified."
             # The base editor can't create files in folders that don't exist yet
             # (e.g. src/app.py in a brand-new project).
             p.parent.mkdir(parents=True, exist_ok=True)
