@@ -459,8 +459,14 @@ class LLM:
                 if "role" not in message:
                     raise ValueError("Message dict must contain 'role' field")
 
-                # Process base64 images if present and model supports images
-                if supports_images and message.get("base64_image"):
+                # Process one or more base64 images if present and the model supports images.
+                image_payloads = message.get("base64_images")
+                if image_payloads is None and message.get("base64_image"):
+                    image_payloads = [{
+                        "data": message["base64_image"],
+                        "mime": message.get("base64_image_mime", "image/jpeg"),
+                    }]
+                if supports_images and image_payloads:
                     # Initialize or convert content to appropriate format
                     if not message.get("content"):
                         message["content"] = []
@@ -479,24 +485,26 @@ class LLM:
                             for item in message["content"]
                         ]
 
-                    # Add the image to content
-                    message["content"].append(
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                            "url": f"data:{message.get('base64_image_mime', 'image/jpeg')};base64,{message['base64_image']}"
-                            },
-                        }
-                    )
+                    for image in image_payloads:
+                        message["content"].append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{image.get('mime', 'image/jpeg')};base64,{image['data']}"
+                                },
+                            }
+                        )
 
-                    # Remove the base64_image field
-                    del message["base64_image"]
+                    # Remove internal image fields before sending the request.
+                    message.pop("base64_image", None)
                     message.pop("base64_image_mime", None)
+                    message.pop("base64_images", None)
                 # If model doesn't support images but message has base64_image, handle gracefully
-                elif not supports_images and message.get("base64_image"):
+                elif not supports_images and image_payloads:
                     # Just remove the base64_image field and keep the text content
-                    del message["base64_image"]
+                    message.pop("base64_image", None)
                     message.pop("base64_image_mime", None)
+                    message.pop("base64_images", None)
 
                 if "content" in message or "tool_calls" in message:
                     formatted_messages.append(message)

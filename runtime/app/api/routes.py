@@ -160,6 +160,43 @@ UPLOAD_EXTENSIONS = {
     ".gif", ".webp", ".svg",
 }
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("PLATFORM_MAX_UPLOAD_MB", "250"))) * 1024 * 1024
+IMAGE_ORDINALS = {
+    "first": 0, "1": 0, "second": 1, "2": 1, "third": 2, "3": 2,
+    "fourth": 3, "4": 3, "fifth": 4, "5": 4,
+}
+
+
+def referenced_images(text: str, uploads: list[UploadedFile], attachment_ids: list[str]) -> list[UploadedFile]:
+    """Return only images explicitly attached or referenced by this message."""
+    images = [item for item in uploads if (item.content_type or "").startswith("image/") and Path(item.stored_path).is_file()]
+    selected: list[UploadedFile] = []
+    by_id = set(attachment_ids)
+    selected.extend(item for item in images if item.id in by_id)
+    lowered = text.casefold()
+    if re.search(r"\b(do not|don't|dont|without|not)\s+(use|inspect|look at|consider)\b.{0,40}\b(image|picture|photo)\b", lowered):
+        return []
+
+    for item in images:
+        filename = item.filename.casefold()
+        stem = Path(item.filename).stem.casefold()
+        if filename in lowered or (stem and len(stem) >= 3 and re.search(rf"\b{re.escape(stem)}\b", lowered)):
+            selected.append(item)
+
+    ordinal_matches = re.findall(
+        r"\b(first|second|third|fourth|fifth|1|2|3|4|5)\s+(?:uploaded\s+)?(?:image|picture|photo)\b|\b(?:image|picture|photo)\s*(?:number\s*)?(1|2|3|4|5)\b",
+        lowered,
+    )
+    for match in ordinal_matches:
+        ordinal = next((part for part in match if part), None)
+        if ordinal is not None:
+            index = IMAGE_ORDINALS[ordinal]
+            if index < len(images):
+                selected.append(images[index])
+
+    if re.search(r"\b(this|that|the|last|latest|previous|current)\s+(image|picture|photo)\b|\b(image|picture|photo)\s+(above|attached|shown)\b", lowered):
+        selected.append(images[-1] if images else None)
+    selected_ids = list(dict.fromkeys(item.id for item in selected if item))[-4:]
+    return [item for item in images if item.id in selected_ids]
 
 
 async def sse_event_stream(
@@ -432,20 +469,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 re.IGNORECASE,
             ))
             uploads = await asyncio.to_thread(store.list_uploaded_files, project_id)
-            image_uploads = [
-                item for item in uploads
-                if item.id in set(body.attachment_ids)
-                and (item.content_type or "").startswith("image/")
-                and Path(item.stored_path).is_file()
-            ][-4:]
+            image_uploads = referenced_images(text, uploads, body.attachment_ids)
             if image_uploads and messages:
-                latest = image_uploads[-1]
-                raw, image_mime = await asyncio.to_thread(
-                    _image_payload, Path(latest.stored_path), latest.content_type
-                )
-                messages[-1]["content"] += f"\nAttached image: {latest.filename}"
-                messages[-1]["base64_image"] = base64.b64encode(raw).decode("ascii")
-                messages[-1]["base64_image_mime"] = image_mime
+                payloads = []
+                for image in image_uploads:
+                    raw, image_mime = await asyncio.to_thread(_image_payload, Path(image.stored_path), image.content_type)
+                    payloads.append({"filename": image.filename, "data": base64.b64encode(raw).decode("ascii"), "mime": image_mime})
+                messages[-1]["content"] += "\nReferenced image(s): " + ", ".join(item["filename"] for item in payloads)
+                messages[-1]["base64_images"] = payloads
             workspace_context = await asyncio.to_thread(_workspace_context, Path(project.workspace)) if code_intent else "No repository context was loaded for this general conversational reply."
             system = {
                 "role": "system",
@@ -461,7 +492,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "asks for implementation, the interface will deliver it to the build workflow. You have "
                     "read-only repository context below; use it to answer architecture and code questions. "
                     "Uploaded files in this project: {uploads}. "
-                    "Images attached to the latest user message should be inspected directly.\n\n{context}"
+                    "Only images explicitly attached or referenced by the latest user message should be inspected.\n\n{context}"
                 ).format(
                     name=project.name,
                     workspace=project.workspace,
