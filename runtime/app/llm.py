@@ -537,6 +537,11 @@ class LLM:
             Exception: For unexpected errors
         """
         try:
+            # A small local coder is usually text-only. Preserve browser and
+            # uploaded-image context by switching to the configured vision
+            # capable fallback before formatting the request.
+            if images and not model_supports_images(self.model) and self._fallback_config is not None and not self._using_fallback:
+                self._rotate_api_key()
             # Check if the model supports images
             supports_images = model_supports_images(self.model)
 
