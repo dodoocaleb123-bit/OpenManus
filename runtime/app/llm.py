@@ -480,8 +480,10 @@ class LLM:
         return formatted_messages
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        # Keep transient retries short; a quota/rate-limit failure should not
+        # block the conversational UI for several minutes.
+        wait=wait_random_exponential(min=0.5, max=8),
+        stop=stop_after_attempt(3),
         retry=retry_if_exception(_is_retryable),  # permanent errors fail fast
     )
     async def ask(
@@ -609,8 +611,10 @@ class LLM:
             raise
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        # Keep transient retries short; a quota/rate-limit failure should not
+        # block the conversational UI for several minutes.
+        wait=wait_random_exponential(min=0.5, max=8),
+        stop=stop_after_attempt(3),
         retry=retry_if_exception(_is_retryable),  # permanent errors fail fast
     )
     async def ask_with_images(
@@ -766,8 +770,10 @@ class LLM:
             raise
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        # Keep transient retries short; a quota/rate-limit failure should not
+        # block the conversational UI for several minutes.
+        wait=wait_random_exponential(min=0.5, max=8),
+        stop=stop_after_attempt(3),
         retry=retry_if_exception(_is_retryable),  # permanent errors fail fast
     )
     async def ask_tool(
