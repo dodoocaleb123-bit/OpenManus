@@ -222,10 +222,34 @@ def response_needs_continuation(answer: str, finish_reason: str | None) -> bool:
     if not ending:
         return True
     return bool(re.search(
-        r"(?:[:;,]|\b(?:and|or|but|because|therefore|so|to|the|a|an|of|is|are|was|were|will|I|I'll|Express|Step\s+\d+\.?)$)",
+        r"(?:[:;,]$|\b(?:and|or|but|because|therefore|so|to|the|a|an|of|is|are|was|were|will|I|I'll|Express|Step\s+\d+\.?)$)",
         ending,
         re.IGNORECASE,
     ))
+
+
+def math_response_needs_repair(answer: str) -> bool:
+    """Detect malformed math markup that MathJax cannot render reliably."""
+    if not answer or not re.search(r"(?:\\\(|\\\[|\$\$|\\frac|\\boxed|\b(?:average|equation|expression|solve)\b)", answer, re.IGNORECASE):
+        return False
+    for opening, closing in ((r"\[", r"\]"), (r"\(", r"\)")):
+        if answer.count(opening) != answer.count(closing):
+            return True
+    if answer.count("$$") % 2:
+        return True
+    # A missing closing brace is especially common in truncated \frac/\boxed output.
+    depth = 0
+    escaped = False
+    for char in answer:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "{":
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+    return depth != 0
 
 
 async def sse_event_stream(
@@ -575,6 +599,8 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "for the final result or answer choice. Clearly label the final answer and include a short "
                     "quick-check or shortcut when it improves understanding. Do not replace mathematical notation "
                     "with awkward plain-text forms such as a/b when a formatted equation is appropriate. "
+                    "Before finishing, verify every \\(...\\), \\[...\\], $$...$$, \\frac{{...}}{{...}}, and \\boxed{{...}} "
+                    "has matching delimiters and braces; never leave a LaTeX command or equation unfinished. "
                     "The assistant also has project tools for implementation tasks: it can inspect and edit files, "
                     "run commands and tests, use the shared browser, and use the connected GitHub integration for "
                     "repository status, branches, commits, pushes, pull requests, and publishing. Do not claim an "
@@ -602,25 +628,35 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     system_msgs=[system],
                     stream=False,
                     temperature=0.3,
-                    max_tokens=768 if image_uploads else 512,
+                    max_tokens=1024 if image_uploads else 900,
                 )
-                for _ in range(2) if image_uploads else range(0):
-                    if not response_needs_continuation(answer, getattr(chat_llm, "last_finish_reason", None)):
+                for _ in range(2):
+                    needs_continuation = response_needs_continuation(answer, getattr(chat_llm, "last_finish_reason", None))
+                    needs_math_repair = math_response_needs_repair(answer)
+                    if not needs_continuation and not needs_math_repair:
                         break
                     continuation_messages = copy.deepcopy(original_messages)
                     continuation_messages.append({"role": "assistant", "content": answer})
                     continuation_messages.append({
                         "role": "user",
-                        "content": "Continue the previous answer from exactly where it stopped. "
-                        "Do not repeat the completed text; finish the current step and provide the final answer.",
+                        "content": (
+                            "Review the previous answer for an incomplete ending or malformed LaTeX. "
+                            "Return a corrected, complete answer from the beginning so no text is duplicated. "
+                            "Preserve the step-by-step explanation, close every math delimiter and brace, "
+                            "and finish with the final answer."
+                            if needs_math_repair else
+                            "Continue the previous answer from exactly where it stopped. "
+                            "Do not repeat the completed text; finish the current step and provide the final answer."
+                        ),
                     })
-                    answer += "\n" + await chat_llm.ask(
+                    continuation = await chat_llm.ask(
                         continuation_messages,
                         system_msgs=[system],
                         stream=False,
                         temperature=0.3,
-                        max_tokens=768 if image_uploads else 512,
+                        max_tokens=1024 if image_uploads else 900,
                     )
+                    answer = continuation if needs_math_repair else answer + "\n" + continuation
             except RateLimitError as exc:
                 raise HTTPException(
                     status_code=429,

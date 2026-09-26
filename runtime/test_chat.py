@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.server import create_app
+from app.api.routes import math_response_needs_repair
 
 
 class FakeChatLLM:
@@ -15,6 +16,16 @@ class FakeChatLLM:
         FakeChatLLM.last_system = system_msgs
         user_messages = [m["content"] for m in messages if m["role"] == "user"]
         return f"Gemini reply to: {user_messages[-1]} (turns={len(user_messages)})"
+
+
+class RepairingChatLLM(FakeChatLLM):
+    calls = 0
+
+    async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
+        RepairingChatLLM.calls += 1
+        if RepairingChatLLM.calls == 1:
+            return r"### Step 1\n\[ y = \frac{2m + 15}{2"
+        return r"### Step 1\n\[ y = \frac{2m + 15}{2} \]\n\n\boxed{m+7}"
 
 
 def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
@@ -137,6 +148,31 @@ def test_project_chat_requests_structured_mathjax_formatting(tmp_path, monkeypat
     assert "\\frac" in system
     assert "\\boxed" in system
     assert "### Step 1" in system
+
+
+def test_math_response_repair_detects_unclosed_latex():
+    assert math_response_needs_repair(r"\[ y = \frac{2m+15}{2") is True
+    assert math_response_needs_repair(r"\[ y = \frac{2m+15}{2} \]") is False
+
+
+def test_project_chat_replaces_incomplete_math_answer(tmp_path, monkeypatch):
+    RepairingChatLLM.calls = 0
+    monkeypatch.setattr("app.api.routes.LLM", RepairingChatLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "math-repair"}).json()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Solve this algebra equation step by step."},
+    )
+    assert response.status_code == 200
+    answer = response.json()["assistant"]["content"]
+    assert RepairingChatLLM.calls == 2
+    assert answer.startswith("### Step 1")
+    assert r"\frac{2m + 15}{2}" in answer
+    assert r"\boxed{m+7}" in answer
+    assert answer.count(r"\[ y") == 1
 
 
 def test_project_chat_reports_model_configuration_problem(tmp_path, monkeypatch):
