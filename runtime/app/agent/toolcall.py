@@ -43,8 +43,14 @@ class ToolCallAgent(ReActAgent):
         """Recover tool calls emitted as JSON text by local OpenAI-compatible models."""
         if not content:
             return []
-        candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.DOTALL)
-        candidates += re.findall(r"(\{\s*[\"']name[\"']\s*:.*?\})", content, flags=re.DOTALL)
+        candidates = [m.strip() for m in re.findall(r"```(?:json)?\s*(.*?)\s*```", content, flags=re.DOTALL)]
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"\{\s*[\"']name[\"']\s*:", content):
+            try:
+                data, _ = decoder.raw_decode(content[match.start():])
+                candidates.append(json.dumps(data))
+            except json.JSONDecodeError:
+                continue
         calls = []
         for raw in candidates:
             try:
