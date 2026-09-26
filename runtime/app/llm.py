@@ -344,11 +344,15 @@ class LLM:
             self.token_counter = TokenCounter(self.tokenizer)
 
     def _make_client(self, api_key: str):
+        try:
+            request_timeout = max(30.0, float(os.environ.get("LLM_REQUEST_TIMEOUT", "180")))
+        except ValueError:
+            request_timeout = 180.0
         if self.api_type == "azure":
-            return AsyncAzureOpenAI(base_url=self.base_url, api_key=api_key, api_version=self.api_version)
+            return AsyncAzureOpenAI(base_url=self.base_url, api_key=api_key, api_version=self.api_version, timeout=request_timeout)
         if self.api_type == "aws":
             return BedrockClient()
-        return AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+        return AsyncOpenAI(api_key=api_key, base_url=self.base_url, timeout=request_timeout)
 
     def _rotate_api_key(self) -> None:
         # Local-first mode: the first provider failure immediately makes the

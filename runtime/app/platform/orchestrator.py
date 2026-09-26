@@ -282,6 +282,8 @@ class AgentOrchestrator:
             loop = CodingLoop(project.workspace)
             max_cycles = loop.max_repair_cycles
             agent.current_step = 0
+            await emit("agent.step", f"Step 1/{agent.max_steps}: preparing the first model request", {"step": 1, "preflight": True})
+            await emit("agent.thought", "Preparing the project context and waiting for the coding model's first response…", {"content": "Preparing the project context and waiting for the coding model's first response…", "preflight": True})
             history = await asyncio.to_thread(self.store.list_chat_messages, task.project_id, 20)
             conversation = "\n".join(f"{item.role.upper()}: {item.content}" for item in history)
             conversation = conversation[-30000:]

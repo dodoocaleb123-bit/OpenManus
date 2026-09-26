@@ -214,6 +214,7 @@ automatically.
 | `AGENT_COMMAND_TIMEOUT` | 300 | Seconds before a single shell command is interrupted |
 | `HUMAN_REPLY_TIMEOUT` | 900 | Seconds the agent waits for your answer before continuing on its own |
 | `LLM_MAX_TOKENS` | 8192 | Max output tokens per model call |
+| `LLM_REQUEST_TIMEOUT` | 180 | Seconds allowed for one local or cloud model request before failover/retry |
 | `LLM_SUPPORTS_IMAGES` | auto | `true`/`false` if vision support is misdetected for your model |
 | `LLM_REASONING_MODEL` | auto | `true`/`false` if your model rejects `temperature`/`max_tokens` |
 | `PLATFORM_USERNAME` | admin | Login username |
