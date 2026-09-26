@@ -22,6 +22,7 @@ from app.platform.agent import WorkspaceBash, WorkspaceEditor, WorkspacePython
 from app.platform.git import GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.store import PlatformStore
+from app.platform.orchestrator import _is_browser_research_task
 from app.server import create_app
 
 
@@ -48,6 +49,14 @@ def wait_for(client: TestClient, task_id: str, predicate, timeout: float = 20.0)
 
 def has(type_):
     return lambda events: any(e["type"] == type_ for e in events)
+
+
+def test_browser_research_intent_does_not_enter_coding_mode():
+    assert _is_browser_research_task(
+        "Go through this website and tell me what is in there https://example.com/search?q=university"
+    )
+    assert _is_browser_research_task("Can you browse https://example.com and summarize the page?")
+    assert not _is_browser_research_task("Browse the website and update the project README with its findings")
 
 
 # -------------------------------------------------------- workspace tools

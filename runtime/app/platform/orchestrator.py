@@ -17,6 +17,21 @@ from app.platform.store import PlatformStore
 AgentFactory = Callable[..., Awaitable[Any]]
 
 
+def _is_browser_research_task(prompt: str) -> bool:
+    """Identify web research requests that should not enter coding validation."""
+    text = prompt.casefold()
+    research_intent = re.search(
+        r"\b(browse|research|search|read|inspect|review|summarize|explain|look\s+at|go\s+through|tell\s+me\s+(?:what|about)|what\s+is\s+this\s+(?:site|website))\b",
+        text,
+    )
+    has_web_target = bool(re.search(r"https?://|\b(website|web\s+page|internet|online)\b", text))
+    code_change = re.search(
+        r"\b(build|create|implement|change|modify|edit|fix|refactor|add|remove|delete|update|write|code|test|commit|push|publish|deploy)\b",
+        text,
+    )
+    return bool(research_intent and has_web_target and not code_change)
+
+
 def _task_complexity(prompt: str, browser: bool = False) -> str:
     text = prompt.lower()
     if browser or re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", text):
@@ -166,7 +181,7 @@ class AgentOrchestrator:
         from app.llm import LLM
         from app.platform.agent import PlatformManus
 
-        browser_task = bool(task.browser_session_id) or bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", task.prompt, re.IGNORECASE))
+        browser_task = bool(task.browser_session_id) or bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website|internet|research)\b", task.prompt, re.IGNORECASE))
         complexity = _task_complexity(task.prompt, bool(task.browser_session_id))
         provider_name = "vision" if browser_task else "heavy_coding"
         cloud_llm = LLM(config_name=provider_name) if (browser_task or complexity == "heavy") and provider_name in config.llm else None
@@ -278,19 +293,31 @@ class AgentOrchestrator:
                 ask=lambda q: self._ask(task, q), extra_tools=extra_tools,
             )
 
-            await emit("agent.running", "Executing autonomous coding workflow", {})
+            research_only = _is_browser_research_task(task.prompt)
+            await emit(
+                "agent.running",
+                "Executing browser research workflow" if research_only else "Executing autonomous coding workflow",
+                {"research_only": research_only},
+            )
             loop = CodingLoop(project.workspace)
             max_cycles = loop.max_repair_cycles
             agent.current_step = 0
             await emit("agent.step", f"Step 1/{agent.max_steps}: preparing the first model request", {"step": 1, "preflight": True})
-            await emit("agent.thought", "Preparing the project context and waiting for the coding model's first response…", {"content": "Preparing the project context and waiting for the coding model's first response…", "preflight": True})
+            await emit("agent.thought", "Preparing the project context and waiting for the browser research model's first response…" if research_only else "Preparing the project context and waiting for the coding model's first response…", {"content": "Preparing the project context and waiting for the browser research model's first response…" if research_only else "Preparing the project context and waiting for the coding model's first response…", "preflight": True})
             history = await asyncio.to_thread(self.store.list_chat_messages, task.project_id, 20)
             conversation = "\n".join(f"{item.role.upper()}: {item.content}" for item in history)
             conversation = conversation[-30000:]
+            research_instructions = (
+                "BROWSER RESEARCH REQUIREMENT: This is a research-only request. Use the platform_browser tool to open the requested URL, "
+                "inspect the visible page, and extract enough relevant content to answer the user. Do not edit files, run project builds, "
+                "commit changes, or claim that a project change was made. Return a concise, evidence-based summary of what the page contains. "
+                if research_only else ""
+            )
             await agent.run(
                 f"RECENT PROJECT CONVERSATION:\n{conversation}\n\n"
                 f"CURRENT USER MESSAGE:\n{task.prompt}\n\n"
-                "UNIFIED CONVERSATION REQUIREMENT: Treat this as one continuous project conversation. "
+                + research_instructions
+                + "UNIFIED CONVERSATION REQUIREMENT: Treat this as one continuous project conversation. "
                 "First understand the user's intent. If the user is asking a question, requesting an explanation, "
                 "or asking for inspection only, read the relevant project files and respond without editing files "
                 "or changing project state. If the user explicitly asks to build, modify, fix, refactor, test, "
@@ -298,6 +325,17 @@ class AgentOrchestrator:
                 "inspect the project first, run appropriate tests/builds, and visually check UI work when relevant. "
                 "Do not claim to have changed or verified anything without evidence."
             )
+            if research_only:
+                summary = agent.final_summary() if hasattr(agent, "final_summary") else "Browser research completed."
+                task.result = summary or "Browser research completed."
+                task.validation = {"passed": True, "results": [], "skipped": True, "reason": "research-only task"}
+                task.checkpoint = "research_complete"
+                task.status = TaskStatus.SUCCEEDED
+                await self.store.save_task(task)
+                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
+                await emit("task.succeeded", "Browser research completed without coding validation", {"result": task.result, "research_only": True})
+                return
+
             task.coding_iteration = 1
             task.checkpoint = "implementation_complete"
             await self.store.save_task(task)
