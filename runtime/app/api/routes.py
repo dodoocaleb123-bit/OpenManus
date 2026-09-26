@@ -27,7 +27,7 @@ from app.platform.git_service import ProjectGit
 from app.platform.github import GitHubClient, GitHubError
 from app.platform.llm_check import llm_problem, llm_status
 from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus, UploadedFile
-from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning
+from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning, _is_browser_research_task
 from app.platform.store import PlatformStore
 
 # Proxies (Render included) close idle HTTP connections; a comment frame every
@@ -300,11 +300,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             )
         task = store.create_task(project_id, prompt.strip())
         user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", prompt.strip())
+        acknowledgement = (
+            "I’ll browse the requested page, inspect its contents, and summarize what I find here. I won’t modify the project."
+            if _is_browser_research_task(prompt)
+            else "I’ll work on that in this conversation. I’ll inspect the project, make the requested changes, and verify the result before reporting back."
+        )
         assistant_message = await asyncio.to_thread(
             store.add_chat_message,
             project_id,
             "assistant",
-            "I’ll work on that in this conversation. I’ll inspect the project, make the requested changes, and verify the result before reporting back.",
+            acknowledgement,
         )
         if browser_session_id:
             task.browser_session_id = browser_session_id

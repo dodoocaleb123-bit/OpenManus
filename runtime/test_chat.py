@@ -88,6 +88,22 @@ def test_project_chat_routes_change_requests_to_the_build_agent(tmp_path, monkey
     assert started and started[0].id == payload["task"]["id"]
 
 
+def test_project_chat_acknowledges_browser_research_without_promising_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "browser-research"}).json()
+    client.app.state.orchestrator.start = lambda task: None
+
+    response = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Go through this website and tell me what is in there https://example.com"},
+    )
+    assert response.status_code == 200
+    acknowledgement = response.json()["assistant"]["content"]
+    assert "summarize what I find" in acknowledgement
+    assert "won’t modify the project" in acknowledgement
+
+
 def test_project_chat_confirms_browsing_capability(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
     client = TestClient(create_app(tmp_path, check_llm=False))
