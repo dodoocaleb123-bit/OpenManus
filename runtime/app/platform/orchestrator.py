@@ -257,7 +257,7 @@ class AgentOrchestrator:
             summary = agent.final_summary() if hasattr(agent, "final_summary") else "Task completed."
             task.result = summary
             assistant_reply = summary or task.error or "Task completed."
-            await asyncio.to_thread(store.add_chat_message, task.project_id, "assistant", assistant_reply)
+            await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", assistant_reply)
             if task.validation and task.validation.get("passed"):
                 task.status = TaskStatus.SUCCEEDED
                 task.checkpoint = "validated"
