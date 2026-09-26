@@ -9,6 +9,11 @@ Deployment: see [`../DEPLOY.md`](../DEPLOY.md). Roadmap: [`BUILD_PLAN.md`](BUILD
 
 ## Unified Assistant
 
+Assistant replies support rendered TeX/LaTeX mathematics through MathJax,
+including display equations, fractions, aligned systems, superscripts, and
+common AMS constructs. MathJax is loaded by the web client; if the CDN is
+unavailable, the original formula text remains visible as a fallback.
+
 Each project now has one persistent assistant composer with an action selector:
 
 - **Discuss** answers questions without changing project files.

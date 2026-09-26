@@ -4,6 +4,18 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>OpenManus Platform</title>
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['\\(', '\\)']],
+    displayMath: [['\\[', '\\]'], ['$$', '$$']],
+    processEscapes: true,
+    packages: {'[+]': ['ams']}
+  },
+  options: {skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']}
+};
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" crossorigin="anonymous"></script>
 <style>
 :root{color-scheme:dark;--bg:#08090b;--panel:#0f1216;--panel2:#151a20;--line:#222932;--text:#e8edf2;--muted:#8b96a3;--accent:#8ab4ff;--ok:#7ddc9a;--bad:#ff8a8a;--warn:#f5c16c;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-size:14px}
@@ -153,8 +165,9 @@ function ensureProcessingStep(number,label){ensureProcessing();if(!processingSte
 function currentProcessingStep(){return processingSteps.size||1}
 function addProcessingEvent(ev,node){const match=String(ev.message||'').match(/Step\s+(\d+)/i);if(match)ensureProcessingStep(Number(match[1]));const number=match?Number(match[1]):currentProcessingStep();const step=ensureProcessingStep(number);if(ev.type==='agent.step')return;step.detail.append(node)}
 function escapeHtml(text){return String(text??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}
-function renderMarkdown(text){let html=escapeHtml(text);html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>');html=html.replace(/```([\s\S]*?)```/g,'<pre>$1</pre>');html=html.replace(/`([^`]+)`/g,'<code>$1</code>');html=html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');html=html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g,'<em>$1</em>');return html.replace(/\n/g,'<br>')}
-function renderChatMessage(message,before=null){const node=el('div','ev '+(message.role==='user'?'user':'assistant'));if(message.role==='assistant')node.innerHTML=renderMarkdown(message.content);else node.textContent=message.content;const feed=$('feed');if(before&&before instanceof Node&&before.parentNode===feed)feed.insertBefore(node,before);else feed.append(node)}
+function renderMarkdown(text){let html=escapeHtml(text);html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>');html=html.replace(/```([\s\S]*?)```/g,'<pre>$1</pre>');html=html.replace(/`([^`]+)`/g,'<code>$1</code>');html=html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');html=html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g,'<em>$1</em>');return html}
+function typesetMath(node,attempt=0){if(!node||!node.textContent||!/[\\$][\\(\\[\\$]/.test(node.textContent))return;if(window.MathJax&&typeof window.MathJax.typesetPromise==='function'){window.MathJax.typesetPromise([node]).catch(()=>{});return}if(attempt<20)setTimeout(()=>typesetMath(node,attempt+1),250)}
+function renderChatMessage(message,before=null){const node=el('div','ev '+(message.role==='user'?'user':'assistant'));if(message.role==='assistant')node.innerHTML=renderMarkdown(message.content);else node.textContent=message.content;const feed=$('feed');if(before&&before instanceof Node&&before.parentNode===feed)feed.insertBefore(node,before);else feed.append(node);if(message.role==='assistant')typesetMath(node)}
 async function showTask(t){closeStream();currentTask=t;lastEventId=null;await appendTaskHistory(t.id);const fresh=await api(`/api/tasks/${t.id}`);currentTask=fresh;const live=['running','queued'].includes(fresh.status);setRunning(live);showQuestion(fresh.pending_question);if(live)openStream(fresh.id)}
 function isStopRequest(text){return /\b(stop|cancel|abort|halt|terminate)\b/i.test(text)&&/\b(task|build|agent|job|process|request|it)\b/i.test(text)}
 async function stopFromChat(text){if(!currentTask)return;renderChatMessage({role:'user',content:text});$('prompt').value='';try{await api(`/api/tasks/${currentTask.id}/cancel`,{method:'POST',body:{message:text}});renderChatMessage({role:'assistant',content:'I stopped the running build. Its conversation and activity remain available above.'})}catch(e){$('feed').append(el('div','ev bad',e.message))}}
