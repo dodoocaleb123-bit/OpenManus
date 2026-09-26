@@ -28,6 +28,16 @@ class RepairingChatLLM(FakeChatLLM):
         return r"### Step 1\n\[ y = \frac{2m + 15}{2} \]\n\n\boxed{m+7}"
 
 
+class MultiPassRepairingChatLLM(FakeChatLLM):
+    calls = 0
+
+    async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
+        MultiPassRepairingChatLLM.calls += 1
+        if MultiPassRepairingChatLLM.calls < 4:
+            return r"### Step 2\n\[ \frac{x^2+5x+6}{"
+        return r"### Step 1\n\[ y = \frac{2m + 15}{2} \]\n\n### Step 2\n\[ \frac{x^2+5x+6}{2x+5} \]\n\n\boxed{B}"
+
+
 def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
@@ -173,6 +183,24 @@ def test_project_chat_replaces_incomplete_math_answer(tmp_path, monkeypatch):
     assert r"\frac{2m + 15}{2}" in answer
     assert r"\boxed{m+7}" in answer
     assert answer.count(r"\[ y") == 1
+
+
+def test_project_chat_allows_multiple_math_repair_passes(tmp_path, monkeypatch):
+    MultiPassRepairingChatLLM.calls = 0
+    monkeypatch.setattr("app.api.routes.LLM", MultiPassRepairingChatLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "long-math"}).json()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Solve both algebra questions in the attached images step by step."},
+    )
+    assert response.status_code == 200
+    assert MultiPassRepairingChatLLM.calls == 4
+    answer = response.json()["assistant"]["content"]
+    assert r"\frac{x^2+5x+6}{2x+5}" in answer
+    assert r"\boxed{B}" in answer
 
 
 def test_project_chat_reports_model_configuration_problem(tmp_path, monkeypatch):

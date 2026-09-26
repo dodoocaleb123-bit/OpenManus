@@ -628,9 +628,12 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     system_msgs=[system],
                     stream=False,
                     temperature=0.3,
-                    max_tokens=1024 if image_uploads else 900,
+                    max_tokens=2048 if image_uploads else 1200,
                 )
-                for _ in range(2):
+                # Long image questions often contain several subproblems. Give
+                # the vision model enough room and retry malformed LaTeX more
+                # than once when a provider cuts off a regenerated answer.
+                for _ in range(4):
                     needs_continuation = response_needs_continuation(answer, getattr(chat_llm, "last_finish_reason", None))
                     needs_math_repair = math_response_needs_repair(answer)
                     if not needs_continuation and not needs_math_repair:
@@ -654,7 +657,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                         system_msgs=[system],
                         stream=False,
                         temperature=0.3,
-                        max_tokens=1024 if image_uploads else 900,
+                        max_tokens=2048 if image_uploads else 1200,
                     )
                     answer = continuation if needs_math_repair else answer + "\n" + continuation
             except RateLimitError as exc:
