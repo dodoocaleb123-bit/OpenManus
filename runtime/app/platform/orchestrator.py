@@ -181,9 +181,12 @@ class AgentOrchestrator:
         from app.llm import LLM
         from app.platform.agent import PlatformManus
 
+        research_only = _is_browser_research_task(task.prompt)
         browser_task = bool(task.browser_session_id) or bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website|internet|research)\b", task.prompt, re.IGNORECASE))
         complexity = _task_complexity(task.prompt, bool(task.browser_session_id))
-        provider_name = "vision" if browser_task else "heavy_coding"
+        # Text-only research can use the same local/default model shown in the
+        # UI. Reserve the dedicated vision profile for screenshots and image work.
+        provider_name = "default" if research_only else ("vision" if browser_task else "heavy_coding")
         cloud_llm = LLM(config_name=provider_name) if (browser_task or complexity == "heavy") and provider_name in config.llm else None
         return await PlatformManus.create_for_project(
             project_name=project.name,
