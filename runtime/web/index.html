@@ -120,7 +120,7 @@ async function api(url,opts={}){if(opts.body&&typeof opts.body!=='string'){opts.
 function safeUrl(u){return typeof u==='string'&&/^https:\/\/github\.com\//.test(u)?u:null}
 
 /* ---------------- status ---------------- */
-async function loadStatus(){try{const s=await api('/api/status');const m=$('pillModel');if(s.llm.configured){m.textContent=`model: ${s.llm.model}${s.llm.supports_images?' · vision':''}`;m.className='pill ok'}else{m.textContent='model: not configured';m.className='pill bad';const b=$('setup');b.style.display='block';b.textContent='⚠ '+s.llm.problem}
+async function loadStatus(){try{const s=await api('/api/status');const m=$('pillModel');if(s.llm.configured){const keys=s.llm.api_key_count>1?` · ${s.llm.api_key_count} keys`:'';m.textContent=`model: ${s.llm.model}${s.llm.supports_images?' · vision':''}${keys}`;m.className='pill ok'}else{m.textContent='model: not configured';m.className='pill bad';const b=$('setup');b.style.display='block';b.textContent='⚠ '+s.llm.problem}
 const g=$('pillGithub');if(s.github.token_configured){g.textContent='GitHub: checking…';api('/api/github/user').then(u=>{g.textContent=`GitHub: ${u.login}`;g.className='pill ok'}).catch(e=>{g.textContent='GitHub: token rejected';g.className='pill bad'})}else{g.textContent='GitHub: no token';g.className='pill'}}catch(e){}}
 
 /* ---------------- projects ---------------- */

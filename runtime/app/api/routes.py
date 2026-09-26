@@ -220,7 +220,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         """Setup status for the UI: is the model configured, is GitHub connected."""
         llm = llm_status()
         return {
-            "llm": {k: llm.get(k) for k in ("configured", "problem", "model", "api_type", "supports_images")},
+            "llm": {k: llm.get(k) for k in ("configured", "problem", "model", "api_type", "supports_images", "api_key_count", "failover_configured")},
             "github": {
                 "token_configured": bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN")),
                 "classic_fallback_configured": bool(os.getenv("GITHUB_CLASSIC_TOKEN")),

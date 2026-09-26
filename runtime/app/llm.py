@@ -137,8 +137,11 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, (TokenLimitExceeded, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError)):
         return False
     if isinstance(exc, RateLimitError):
-        keys = [item for item in os.environ.get("LLM_API_KEYS", "").replace("\n", ",").split(",") if item.strip()]
-        return len(keys) > 1
+        # Always allow the bounded retry policy to run. The request handler
+        # rotates to the next configured key before the next attempt; when
+        # there is only one key, the short bounded retry still handles brief
+        # provider throttling without causing multi-minute stalls.
+        return True
     return isinstance(exc, Exception)
 
 

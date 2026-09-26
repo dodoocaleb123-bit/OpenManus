@@ -29,6 +29,8 @@ def llm_status() -> dict[str, Any]:
     source = str(config._get_config_path()) if hasattr(config, "_get_config_path") else ""
     api_type = (getattr(settings, "api_type", "") or "").lower()
     key = (getattr(settings, "api_key", "") or "").strip()
+    configured_keys = [key, *(getattr(settings, "api_keys", []) or [])]
+    key_count = len(dict.fromkeys(item.strip() for item in configured_keys if item and item.strip()))
     problem = None
     if source.endswith("config.example.toml"):
         problem = f"No LLM configuration found (the example config is in use). {SETUP_HINT}"
@@ -43,6 +45,8 @@ def llm_status() -> dict[str, Any]:
         "base_url": getattr(settings, "base_url", None),
         "api_type": api_type or "openai",
         "supports_images": model_supports_images(getattr(settings, "model", "") or ""),
+        "api_key_count": key_count,
+        "failover_configured": key_count > 1,
     }
 
 
