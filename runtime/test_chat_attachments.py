@@ -51,6 +51,33 @@ def test_chat_sends_uploaded_image_as_vision_content(tmp_path, monkeypatch):
     assert latest["base64_images"][0]["data"]
 
 
+def test_chat_reuses_stored_image_only_when_message_references_it(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.routes.LLM", CapturingLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = make_project(client)
+    client.post(
+        f"/api/projects/{project['id']}/uploads",
+        files={"file": ("diagram.png", b"fake-image-bytes", "image/png")},
+    )
+
+    unrelated = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "What can you help me with?"},
+    )
+    assert unrelated.status_code == 200
+    assert "base64_images" not in CapturingLLM.captured[-1]
+
+    related = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Please describe the uploaded image."},
+    )
+    assert related.status_code == 200
+    latest = CapturingLLM.captured[-1]
+    assert "diagram.png" in latest["content"]
+    assert latest["base64_images"][0]["mime"] == "image/png"
+
+
 def test_chat_returns_actionable_rate_limit_error(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.LLM", RateLimitedLLM)
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
