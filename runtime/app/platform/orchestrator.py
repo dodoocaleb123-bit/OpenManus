@@ -347,7 +347,14 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.exception(f"Task {task.id} failed")
             raw_error = str(exc) or exc.__class__.__name__
-            if "ratelimit" in raw_error.lower() or "rate limit" in raw_error.lower() or "quota" in raw_error.lower():
+            lower_error = raw_error.lower()
+            retry_cause = getattr(getattr(exc, "last_attempt", None), "exception", lambda: None)()
+            timeout_error = "timeout" in lower_error or "timed out" in lower_error or "apitimeout" in lower_error
+            if retry_cause is not None:
+                timeout_error = timeout_error or "timeout" in str(retry_cause).lower() or "apitimeout" in retry_cause.__class__.__name__.lower()
+            if timeout_error:
+                task.error = "The build stopped because the model request timed out after its retry attempts. The workspace may contain partial work; retry the task after checking the configured local/cloud model endpoint."
+            elif "ratelimit" in lower_error or "rate limit" in lower_error or "quota" in lower_error:
                 task.error = "The build could not start because the configured LLM provider reported a rate limit or quota error. Check the model API quota, wait, or configure another available API key."
             else:
                 task.error = raw_error

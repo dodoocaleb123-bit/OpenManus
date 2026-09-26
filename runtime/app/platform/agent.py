@@ -281,6 +281,8 @@ WORKING METHOD (Plan -> Act -> Observe -> Verify -> Repeat)
 7. Finish with `terminate` only when the task is done and verified (or truly impossible). Your final
    message before terminating must summarise what you changed, how you verified it, and anything the
    user must do next.
+8. If a model or tool request times out, do not claim the project is complete. Preserve any useful partial
+   work, explain the timeout clearly, and allow the task to be retried.
 
 After you finish, the platform independently runs the project's build/tests. If they fail, you will
 get the failing output and must repair it.

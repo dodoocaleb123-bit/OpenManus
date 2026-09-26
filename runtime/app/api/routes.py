@@ -386,6 +386,21 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "Hello! How can I help you today?",
                 )
                 return {"user": user_message, "assistant": assistant_message}
+            if re.search(r"\b(are you|is it|what is|what's|how is)\b.*\b(building|working|progress|status|process)\b|\b(in progress|still building|still working)\b", text, re.IGNORECASE):
+                project_tasks = [task for task in store.tasks.values() if task.project_id == project_id]
+                latest = max(project_tasks, key=lambda task: task.created_at, default=None)
+                if latest is not None and latest.status in {TaskStatus.RUNNING, TaskStatus.QUEUED}:
+                    status_reply = f"Yes. The build is currently {latest.status.value} in this conversation. You can watch its Processing steps or tell me to stop it."
+                elif latest is not None and latest.status == TaskStatus.SUCCEEDED:
+                    status_reply = "The latest build completed successfully and was validated."
+                elif latest is not None and latest.status == TaskStatus.FAILED:
+                    status_reply = f"No. The latest build is not running because it failed: {latest.error or 'the task reported an unknown error.'}"
+                elif latest is not None and latest.status == TaskStatus.CANCELLED:
+                    status_reply = "No. The latest build was cancelled and is not running."
+                else:
+                    status_reply = "No build is currently running for this project."
+                assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", status_reply)
+                return {"user": user_message, "assistant": assistant_message}
             if re.search(r"\b(what can you do|what are you capable|your capabilities|can you access github|can you interact with github)\b", text, re.IGNORECASE):
                 github_ready = bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN"))
                 capabilities = (
