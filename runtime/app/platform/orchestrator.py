@@ -32,6 +32,11 @@ def _is_browser_research_task(prompt: str) -> bool:
     return bool(research_intent and has_web_target and not code_change)
 
 
+def _research_url(prompt: str) -> str | None:
+    match = re.search(r"https?://[^\s<>]+", prompt)
+    return match.group(0).rstrip(".,!?)]}") if match else None
+
+
 def _task_complexity(prompt: str, browser: bool = False) -> str:
     text = prompt.lower()
     if browser or re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", text):
@@ -266,6 +271,8 @@ class AgentOrchestrator:
         await self.store.emit(Event(task_id=task.id, type="task.started", message="Agent started", data={"attempt": task.attempt}))
 
         agent = None
+        research_only = _is_browser_research_task(task.prompt)
+        research_snapshot: dict[str, Any] | None = None
         inbox: asyncio.Queue = asyncio.Queue()
         self._inboxes[task.id] = inbox
         try:
@@ -278,15 +285,30 @@ class AgentOrchestrator:
             await emit("workspace.ready", f"Workspace ready: {project.workspace}", {"workspace": project.workspace})
             if await self._try_fast_file_task(task, project, emit):
                 return
-            if self.check_llm and (problem := llm_problem()):
-                raise RuntimeError(problem)
 
             extra_tools: list[Any] = []
             browser_tool = self._browser_tool(task, project)
             if browser_tool is not None:
                 extra_tools.append(browser_tool)
+                # Start and inspect research pages before touching the model.
+                # This keeps browsing useful even when the configured provider
+                # is temporarily rate-limited or unavailable.
+                if research_only and (url := _research_url(task.prompt)):
+                    navigation = await browser_tool.execute(action="navigate", url=url)
+                    if navigation.error:
+                        raise RuntimeError(navigation.error)
+                    page = await browser_tool._session()
+                    research_snapshot = await page.evaluate(
+                        """({
+                            title: document.title,
+                            description: document.querySelector('meta[name="description"]')?.content || '',
+                            text: document.body?.innerText || ''
+                        })"""
+                    )
                 if browser_tool.session is not None:
                     await emit("browser.attached", f"Attached shared browser session {browser_tool.session.id}", {"session_id": browser_tool.session.id})
+            if self.check_llm and (problem := llm_problem()) and not research_only:
+                raise RuntimeError(problem)
             from app.platform.git_tool import PlatformGitTool
 
             extra_tools.append(PlatformGitTool(store=self.store, project_id=project.id, on_event=emit))
@@ -296,7 +318,6 @@ class AgentOrchestrator:
                 ask=lambda q: self._ask(task, q), extra_tools=extra_tools,
             )
 
-            research_only = _is_browser_research_task(task.prompt)
             await emit(
                 "agent.running",
                 "Executing browser research workflow" if research_only else "Executing autonomous coding workflow",
@@ -389,6 +410,26 @@ class AgentOrchestrator:
             await self.store.emit(Event(task_id=task.id, type="task.cancelled", message="Task cancelled"))
         except Exception as exc:
             logger.exception(f"Task {task.id} failed")
+            if research_only and research_snapshot:
+                title = str(research_snapshot.get("title") or "The requested page")
+                description = str(research_snapshot.get("description") or "").strip()
+                text = re.sub(r"\s+", " ", str(research_snapshot.get("text") or "")).strip()
+                if len(text) > 1800:
+                    text = text[:1800].rsplit(" ", 1)[0] + "…"
+                parts = [f"**{title}**"]
+                if description:
+                    parts.append(description)
+                if text:
+                    parts.append(f"The page contains: {text}")
+                task.result = "\n\n".join(parts)
+                task.validation = {"passed": True, "results": [], "skipped": True, "reason": "LLM unavailable; browser extraction fallback"}
+                task.checkpoint = "research_complete_fallback"
+                task.status = TaskStatus.SUCCEEDED
+                task.error = None
+                await self.store.save_task(task)
+                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
+                await emit("task.succeeded", "Browser page extracted; model summary was unavailable", {"result": task.result, "fallback": True})
+                return
             raw_error = str(exc) or exc.__class__.__name__
             lower_error = raw_error.lower()
             retry_cause = getattr(getattr(exc, "last_attempt", None), "exception", lambda: None)()
