@@ -26,17 +26,35 @@ services:
       mountPath: /app/OpenManus/workspace
       sizeGB: 10
     envVars:
-      # ---- LLM (required for agent execution; see DEPLOY.md for provider values) ----
-      - key: LLM_MODEL
-        sync: false # e.g. claude-sonnet-4-5  |  gpt-4.1
-      - key: LLM_BASE_URL
-        sync: false # e.g. https://api.anthropic.com/v1/  |  https://api.openai.com/v1
-      - key: LLM_API_KEY
+      # ---- Local-first routing (see DEPLOY.md for the three dedicated pools) ----
+      - key: LOCAL_LLM_MODEL
+        sync: false # e.g. qwen2.5-coder:7b
+      - key: LOCAL_LLM_BASE_URL
+        sync: false # e.g. http://host.docker.internal:11434/v1
+      - key: VISION_LLM_MODEL
         sync: false
+      - key: VISION_LLM_BASE_URL
+        sync: false
+      - key: VISION_LLM_API_KEYS
+        sync: false # comma/newline-separated 10-key vision pool
+      - key: HEAVY_CODING_LLM_MODEL
+        sync: false
+      - key: HEAVY_CODING_LLM_BASE_URL
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEYS
+        sync: false # comma/newline-separated 10-key heavy-coding pool
+      - key: OLLAMA_FALLBACK_LLM_MODEL
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_BASE_URL
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEYS
+        sync: false # comma/newline-separated 10-key fallback pool
       - key: LLM_MAX_TOKENS
         value: "8192"
       - key: LLM_TEMPERATURE
         value: "0.0"
+      - key: LLM_REQUEST_TIMEOUT
+        value: "180"
       # Only for Azure / Bedrock / Ollama-style endpoints; leave unset for Anthropic/OpenAI.
       # - key: LLM_API_TYPE
       #   value: azure

@@ -300,7 +300,10 @@ class LLM:
             llm_config = llm_config or config.llm
             llm_config = llm_config.get(config_name, llm_config["default"])
             self._config_name = config_name
-            self._fallback_config = config.llm.get("cloud") if config_name == "default" else None
+            self._fallback_config = (
+                config.llm.get("fallback") or config.llm.get("cloud")
+                if config_name == "default" else None
+            )
             self._using_fallback = False
             self.model = llm_config.model
             self.max_tokens = llm_config.max_tokens

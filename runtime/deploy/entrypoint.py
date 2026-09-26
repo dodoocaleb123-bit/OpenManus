@@ -67,6 +67,27 @@ def toml_num(name: str, raw: str, kind: type) -> str:
         sys.exit(f"[entrypoint] {name} must be a{'n integer' if kind is int else ' number'}, got {raw!r}")
 
 
+def key_pool(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return list(dict.fromkeys(item.strip() for item in raw.replace("\n", ",").split(",") if item.strip()))
+
+
+def append_pool(lines: list[str], section: str, model: str | None, base_url: str | None, keys: list[str], max_tokens: str, temperature: str) -> None:
+    if not (model and base_url and keys):
+        return
+    lines += [
+        "",
+        f"[llm.{section}]",
+        f"model = {toml_str(model)}",
+        f"base_url = {toml_str(base_url)}",
+        f"api_key = {toml_str(keys[0])}",
+        f"api_keys = {json.dumps(keys)}",
+        'api_type = "openai"',
+        f"max_tokens = {max_tokens}",
+        f"temperature = {temperature}",
+    ]
+
+
 def render_llm_config() -> str:
     # When LOCAL_LLM_* is configured, it becomes the default provider. The
     # existing LLM_* values remain the backward-compatible cloud-only mode.
@@ -91,20 +112,22 @@ def render_llm_config() -> str:
         f"max_tokens = {toml_num('LLM_MAX_TOKENS', env('LLM_MAX_TOKENS') or '8192', int)}",
         f"temperature = {toml_num('LLM_TEMPERATURE', env('LLM_TEMPERATURE') or '0.0', float)}",
     ]
-    raw_keys = os.environ.get("LLM_API_KEYS", "")
-    api_keys = [item.strip() for item in raw_keys.replace("\n", ",").split(",") if item.strip()]
+    api_keys = key_pool("LOCAL_LLM_API_KEYS") or key_pool("LLM_API_KEYS")
     if api_keys and not local_model:
         lines.append(f"api_keys = {json.dumps(api_keys)}")
 
-    cloud_model = env("CLOUD_LLM_MODEL") or (env("LLM_MODEL") if local_model else None)
-    cloud_base = env("CLOUD_LLM_BASE_URL") or (env("LLM_BASE_URL") if local_model else None)
-    cloud_key = env("CLOUD_LLM_API_KEY") or (env("LLM_API_KEY") if local_model else None)
-    if cloud_model and cloud_base and cloud_key:
-        lines += ["", "[llm.cloud]", f"model = {toml_str(cloud_model)}", f"base_url = {toml_str(cloud_base)}", f"api_key = {toml_str(cloud_key)}", f"max_tokens = {toml_num('LLM_MAX_TOKENS', env('LLM_MAX_TOKENS') or '8192', int)}", f"temperature = {toml_num('LLM_TEMPERATURE', env('LLM_TEMPERATURE') or '1.0', float)}"]
-        cloud_key_source = os.environ.get("CLOUD_LLM_API_KEYS", "") or (os.environ.get("LLM_API_KEYS", "") if local_model else "")
-        cloud_keys = [item.strip() for item in cloud_key_source.replace("\n", ",").split(",") if item.strip()]
-        if cloud_keys:
-            lines.append(f"api_keys = {json.dumps(cloud_keys)}")
+    max_tokens = toml_num("LLM_MAX_TOKENS", env("LLM_MAX_TOKENS") or "8192", int)
+    temperature = toml_num("LLM_TEMPERATURE", env("LLM_TEMPERATURE") or "1.0", float)
+    append_pool(lines, "vision", env("VISION_LLM_MODEL"), env("VISION_LLM_BASE_URL"), key_pool("VISION_LLM_API_KEYS"), max_tokens, temperature)
+    append_pool(lines, "heavy_coding", env("HEAVY_CODING_LLM_MODEL"), env("HEAVY_CODING_LLM_BASE_URL"), key_pool("HEAVY_CODING_LLM_API_KEYS"), max_tokens, temperature)
+    append_pool(lines, "fallback", env("OLLAMA_FALLBACK_LLM_MODEL"), env("OLLAMA_FALLBACK_LLM_BASE_URL"), key_pool("OLLAMA_FALLBACK_LLM_API_KEYS"), max_tokens, temperature)
+
+    # Backward-compatible migration path for existing local-first deployments.
+    legacy_model = env("CLOUD_LLM_MODEL") or (env("LLM_MODEL") if local_model else None)
+    legacy_base = env("CLOUD_LLM_BASE_URL") or (env("LLM_BASE_URL") if local_model else None)
+    legacy_keys = key_pool("CLOUD_LLM_API_KEYS") or ([env("CLOUD_LLM_API_KEY")] if env("CLOUD_LLM_API_KEY") else [])
+    if not key_pool("OLLAMA_FALLBACK_LLM_API_KEYS"):
+        append_pool(lines, "fallback", legacy_model, legacy_base, legacy_keys, max_tokens, temperature)
     if env("LLM_MAX_INPUT_TOKENS"):
         lines.append(f"max_input_tokens = {toml_num('LLM_MAX_INPUT_TOKENS', env('LLM_MAX_INPUT_TOKENS'), int)}")
     if env("LLM_API_TYPE"):

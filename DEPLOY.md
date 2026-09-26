@@ -109,32 +109,46 @@ How the platform handles the tokens, whichever option you pick:
 
    | Prompt | Enter |
    | --- | --- |
-| `LLM_MODEL` | from step 2 |
-| `LLM_BASE_URL` | from step 2 |
-| `LLM_API_KEY` | from step 2 |
-| `LLM_API_KEYS` | optional: additional comma- or newline-separated keys kept in the local environment |
+| `LOCAL_LLM_MODEL` | Ollama model, e.g. `qwen2.5-coder:7b` |
+| `LOCAL_LLM_BASE_URL` | Container-reachable Ollama endpoint, e.g. `http://host.docker.internal:11434/v1` |
+| `VISION_LLM_MODEL`, `VISION_LLM_BASE_URL`, `VISION_LLM_API_KEYS` | Cloud vision model, endpoint, and 10-key pool |
+| `HEAVY_CODING_LLM_MODEL`, `HEAVY_CODING_LLM_BASE_URL`, `HEAVY_CODING_LLM_API_KEYS` | Cloud heavy-coding model, endpoint, and 10-key pool |
+| `OLLAMA_FALLBACK_LLM_MODEL`, `OLLAMA_FALLBACK_LLM_BASE_URL`, `OLLAMA_FALLBACK_LLM_API_KEYS` | Cloud fallback model, endpoint, and 10-key pool |
+| `LLM_API_KEY`, `LLM_API_KEYS` | Legacy single-provider compatibility only; do not use in the new three-pool setup |
 | `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
    | `GITHUB_CLASSIC_TOKEN` | option C only: the classic fallback token (otherwise leave empty) |
 
 4. Click **Apply** (or **Deploy Blueprint**).
 
-### Optional API-key failover
+### Dedicated model pools and routing
 
-For a local Docker deployment, `LLM_API_KEYS` can contain additional keys:
+The new local-first configuration has no primary cloud API-key pool. Use Ollama as the default provider and keep three separate cloud pools:
 
 ```env
-LLM_API_KEY=first-key
-LLM_API_KEYS=first-key,second-key,third-key
+LOCAL_LLM_MODEL=qwen2.5-coder:7b
+LOCAL_LLM_BASE_URL=http://host.docker.internal:11434/v1
+LOCAL_LLM_API_KEY=ollama
+
+VISION_LLM_MODEL=gemini-3-flash-preview
+VISION_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+VISION_LLM_API_KEYS=vision-key-01,vision-key-02,vision-key-03,vision-key-04,vision-key-05,vision-key-06,vision-key-07,vision-key-08,vision-key-09,vision-key-10
+
+HEAVY_CODING_LLM_MODEL=gemini-3-flash-preview
+HEAVY_CODING_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+HEAVY_CODING_LLM_API_KEYS=coding-key-01,coding-key-02,coding-key-03,coding-key-04,coding-key-05,coding-key-06,coding-key-07,coding-key-08,coding-key-09,coding-key-10
+
+OLLAMA_FALLBACK_LLM_MODEL=gemini-3-flash-preview
+OLLAMA_FALLBACK_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+OLLAMA_FALLBACK_LLM_API_KEYS=fallback-key-01,fallback-key-02,fallback-key-03,fallback-key-04,fallback-key-05,fallback-key-06,fallback-key-07,fallback-key-08,fallback-key-09,fallback-key-10
 ```
 
-When a request receives a provider rate-limit response, the app switches to the
-next configured key and retries. Keys are read only from environment variables,
-are not written to Git, and are never displayed in the UI. This is failover,
-not a quota bypass: keys belonging to the same Google Cloud project generally
-share project-level RPM/TPM/RPD limits. A 429 can also mean per-minute request
-limits, token limits, model-specific limits, or a shared project quota even when
-the daily request count is far below its advertised maximum. Images and long
-chat history consume substantially more tokens than a short `hello` message.
+Routing is: deterministic normal code first; then Ollama for tasks it can handle;
+vision tasks use the vision pool; tasks classified as beyond Ollama use the heavy-coding
+pool; and Ollama failures/timeouts switch to the fallback pool. Each pool rotates its
+own keys. Keys are read only from environment variables, never written to Git, and
+never displayed in the UI. Ten keys are not a quota bypass: keys belonging to the same
+Google Cloud project generally share project-level RPM/TPM/RPD limits, so separate
+projects provide better isolation.
 
 ### 6. Watch the first build (about 8–15 minutes)
 
@@ -221,7 +235,7 @@ automatically.
 
 ### Local-first hybrid routing
 
-When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses the local model for normal coding and conversation. Simple create-and-verify file requests use a deterministic fast path and do not call an LLM. Large application, browser, screenshot, and visual tasks use the configured cloud provider first, then retain the normal fallback behavior.
+When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses Ollama for normal coding and conversation. Simple create-and-verify file requests use a deterministic fast path and do not call an LLM. Vision tasks use `VISION_LLM_*`; heavy coding uses `HEAVY_CODING_LLM_*`; and Ollama failures use `OLLAMA_FALLBACK_LLM_*`.
 
 Set these variables when local-first mode is enabled:
 
@@ -229,12 +243,11 @@ Set these variables when local-first mode is enabled:
 | --- | --- |
 | `LOCAL_LLM_MODEL` | Local Ollama/OpenAI-compatible model, for example `qwen2.5-coder:7b` |
 | `LOCAL_LLM_BASE_URL` | Local endpoint reachable from the container, for example `http://host.docker.internal:11434/v1` |
-| `CLOUD_LLM_MODEL` | Cloud coding model used for heavy and browser tasks |
-| `CLOUD_LLM_BASE_URL` | Cloud provider OpenAI-compatible endpoint |
-| `CLOUD_LLM_API_KEY` | Cloud provider key |
-| `CLOUD_LLM_API_KEYS` | Optional comma- or newline-separated cloud failover keys |
+| `VISION_LLM_*` | Dedicated cloud vision pool (`MODEL`, `BASE_URL`, `API_KEYS`) |
+| `HEAVY_CODING_LLM_*` | Dedicated cloud heavy-coding pool (`MODEL`, `BASE_URL`, `API_KEYS`) |
+| `OLLAMA_FALLBACK_LLM_*` | Dedicated cloud fallback pool (`MODEL`, `BASE_URL`, `API_KEYS`) |
 
-If the `CLOUD_LLM_*` variables are omitted while local-first mode is enabled, the regular `LLM_*` provider is used as the cloud fallback.
+The old `CLOUD_LLM_*` variables remain supported as a migration fallback, but the new setup should use only the three dedicated pools above.
 
 ## LLM provider settings
 

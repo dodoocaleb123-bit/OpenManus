@@ -19,6 +19,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 from tenacity import RetryError
 
+from app.config import config
 from app.llm import LLM
 from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
@@ -469,7 +470,8 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 ),
             }
             try:
-                answer = await LLM().ask(
+                chat_llm = LLM(config_name="vision") if image_uploads and "vision" in config.llm else LLM()
+                answer = await chat_llm.ask(
                     messages,
                     system_msgs=[system],
                     stream=False,

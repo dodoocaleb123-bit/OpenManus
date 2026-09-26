@@ -166,10 +166,10 @@ class AgentOrchestrator:
         from app.llm import LLM
         from app.platform.agent import PlatformManus
 
-        browser_task = bool(task.browser_session_id) or _task_complexity(task.prompt, False) == "heavy" and bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", task.prompt, re.IGNORECASE))
+        browser_task = bool(task.browser_session_id) or bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", task.prompt, re.IGNORECASE))
         complexity = _task_complexity(task.prompt, bool(task.browser_session_id))
-        provider_name = "vision" if browser_task and "vision" in config.llm else "cloud"
-        cloud_llm = LLM(config_name=provider_name) if complexity == "heavy" and provider_name in config.llm else None
+        provider_name = "vision" if browser_task else "heavy_coding"
+        cloud_llm = LLM(config_name=provider_name) if (browser_task or complexity == "heavy") and provider_name in config.llm else None
         return await PlatformManus.create_for_project(
             project_name=project.name,
             workspace=project.workspace,
