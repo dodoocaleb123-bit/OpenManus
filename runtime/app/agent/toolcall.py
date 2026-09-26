@@ -1,5 +1,7 @@
 import asyncio
 import json
+import re
+import uuid
 from typing import Any, List, Optional, Union
 
 from pydantic import Field
@@ -8,7 +10,7 @@ from app.agent.react import ReActAgent
 from app.exceptions import TokenLimitExceeded
 from app.logger import logger
 from app.prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
-from app.schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
+from app.schema import TOOL_CHOICE_TYPE, AgentState, Function, Message, ToolCall, ToolChoice
 from app.tool import CreateChatCompletion, Terminate, ToolCollection
 
 
@@ -35,6 +37,31 @@ class ToolCallAgent(ReActAgent):
 
     max_steps: int = 30
     max_observe: Optional[Union[int, bool]] = None
+
+    @staticmethod
+    def _text_tool_calls(content: str, allowed: set[str]) -> list[ToolCall]:
+        """Recover tool calls emitted as JSON text by local OpenAI-compatible models."""
+        if not content:
+            return []
+        candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.DOTALL)
+        candidates += re.findall(r"(\{\s*[\"']name[\"']\s*:.*?\})", content, flags=re.DOTALL)
+        calls = []
+        for raw in candidates:
+            try:
+                data = json.loads(raw.replace("'name'", '"name"').replace("'arguments'", '"arguments"'))
+                name = data.get("name")
+                if name not in allowed:
+                    continue
+                args = data.get("arguments", {})
+                if isinstance(args, str):
+                    json.loads(args)
+                    arguments = args
+                else:
+                    arguments = json.dumps(args)
+                calls.append(ToolCall(id=f"local-{uuid.uuid4().hex}", function=Function(name=name, arguments=arguments)))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return calls
 
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
@@ -72,10 +99,13 @@ class ToolCallAgent(ReActAgent):
                 return False
             raise
 
-        self.tool_calls = tool_calls = (
-            response.tool_calls if response and response.tool_calls else []
-        )
         content = response.content if response and response.content else ""
+        tool_calls = response.tool_calls if response and response.tool_calls else []
+        if not tool_calls and content:
+            tool_calls = self._text_tool_calls(content, set(self.available_tools.tool_map))
+            if tool_calls:
+                logger.warning("Recovered %s tool call(s) emitted as local-model text", len(tool_calls))
+        self.tool_calls = tool_calls
 
         # Log response info
         logger.info(f"✨ {self.name}'s thoughts: {content}")
