@@ -620,10 +620,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         return task
 
     @router.post("/tasks/{task_id}/cancel")
-    async def cancel_task(task_id: str):
-        task_or_404(task_id)
+    async def cancel_task(task_id: str, body: TaskMessage | None = None):
+        task = task_or_404(task_id)
+        if body and body.message.strip():
+            await asyncio.to_thread(store.add_chat_message, task.project_id, "user", body.message.strip())
         if not await orchestrator.cancel(task_id):
             raise HTTPException(status_code=409, detail="Task is not running")
+        if body and body.message.strip():
+            await asyncio.to_thread(store.add_chat_message, task.project_id, "assistant", "I stopped the running build. Its conversation and activity remain available.")
         return task_or_404(task_id)
 
     @router.post("/tasks/{task_id}/messages")
