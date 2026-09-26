@@ -764,7 +764,8 @@ class LLM:
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                self._rotate_api_key()
+                logger.error("Rate limit exceeded; rotated to the next configured API key before retry.")
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise
@@ -898,7 +899,8 @@ class LLM:
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                self._rotate_api_key()
+                logger.error("Rate limit exceeded; rotated to the next configured API key before retry.")
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise
