@@ -270,7 +270,7 @@ WORKING METHOD (Plan -> Act -> Observe -> Verify -> Repeat)
 1. Understand the request. Inspect the existing project first (list files, read README/package
    manifests) before changing anything.
 2. Write a short plan for yourself, then execute it step by step.
-3. After every action, read the result. On errors, diagnose the real cause from the output and fix it.
+3. After every action, read the result. On errors, diagnose the real cause from the output and fix it. If a file-create action reports that the file already exists, do not repeat `create`: use `view` or a safe edit, verify its contents, and continue.
 4. Verify with evidence: install dependencies, run the build and the tests, start the app and check it
    in the browser for UI work. Add or update tests for new behaviour when the project has a test setup.
 5. Keep all files inside the workspace. Never print, log or commit secrets. Keep a .gitignore with
