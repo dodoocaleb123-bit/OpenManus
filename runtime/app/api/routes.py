@@ -507,6 +507,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     status_reply = "No build is currently running for this project."
                 assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", status_reply)
                 return {"user": user_message, "assistant": assistant_message}
+            if re.search(r"\b(can you|are you able to|do you)\b.*\b(browse|search|internet|web|website|online)\b|\b(browse|search|internet|web|website|online)\b.*\b(capabilit|access|available)\b", text, re.IGNORECASE):
+                capabilities = (
+                    "Yes. OpenManus can browse the internet through its shared browser when you ask it to "
+                    "research a topic, open a website, read a page, compare sources, fill out a form, or test a web app. "
+                    "For example, say: ‘Browse the web and find the latest information about …’ or provide a URL and ask me to inspect it. "
+                    "Browsing is performed by the build agent in this same conversation, so I can report what I found and, "
+                    "when requested, use the findings to inspect or update your project. I do not browse automatically for every ordinary question."
+                )
+                assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", capabilities)
+                return {"user": user_message, "assistant": assistant_message}
             if re.search(r"\b(what can you do|what are you capable|your capabilities|can you access github|can you interact with github)\b", text, re.IGNORECASE):
                 github_ready = bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN"))
                 capabilities = (
