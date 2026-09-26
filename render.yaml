@@ -35,20 +35,74 @@ services:
         sync: false
       - key: VISION_LLM_BASE_URL
         sync: false
-      - key: VISION_LLM_API_KEYS
-        sync: false # comma/newline-separated 10-key vision pool
+      - key: VISION_LLM_API_KEY_01
+        sync: false
+      - key: VISION_LLM_API_KEY_02
+        sync: false
+      - key: VISION_LLM_API_KEY_03
+        sync: false
+      - key: VISION_LLM_API_KEY_04
+        sync: false
+      - key: VISION_LLM_API_KEY_05
+        sync: false
+      - key: VISION_LLM_API_KEY_06
+        sync: false
+      - key: VISION_LLM_API_KEY_07
+        sync: false
+      - key: VISION_LLM_API_KEY_08
+        sync: false
+      - key: VISION_LLM_API_KEY_09
+        sync: false
+      - key: VISION_LLM_API_KEY_10
+        sync: false
       - key: HEAVY_CODING_LLM_MODEL
         sync: false
       - key: HEAVY_CODING_LLM_BASE_URL
         sync: false
-      - key: HEAVY_CODING_LLM_API_KEYS
-        sync: false # comma/newline-separated 10-key heavy-coding pool
+      - key: HEAVY_CODING_LLM_API_KEY_01
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_02
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_03
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_04
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_05
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_06
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_07
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_08
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_09
+        sync: false
+      - key: HEAVY_CODING_LLM_API_KEY_10
+        sync: false
       - key: OLLAMA_FALLBACK_LLM_MODEL
         sync: false
       - key: OLLAMA_FALLBACK_LLM_BASE_URL
         sync: false
-      - key: OLLAMA_FALLBACK_LLM_API_KEYS
-        sync: false # comma/newline-separated 10-key fallback pool
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_01
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_02
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_03
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_04
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_05
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_06
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_07
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_08
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_09
+        sync: false
+      - key: OLLAMA_FALLBACK_LLM_API_KEY_10
+        sync: false
       - key: LLM_MAX_TOKENS
         value: "8192"
       - key: LLM_TEMPERATURE

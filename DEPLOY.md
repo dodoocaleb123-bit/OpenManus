@@ -111,9 +111,9 @@ How the platform handles the tokens, whichever option you pick:
    | --- | --- |
 | `LOCAL_LLM_MODEL` | Ollama model, e.g. `qwen2.5-coder:7b` |
 | `LOCAL_LLM_BASE_URL` | Container-reachable Ollama endpoint, e.g. `http://host.docker.internal:11434/v1` |
-| `VISION_LLM_MODEL`, `VISION_LLM_BASE_URL`, `VISION_LLM_API_KEYS` | Cloud vision model, endpoint, and 10-key pool |
-| `HEAVY_CODING_LLM_MODEL`, `HEAVY_CODING_LLM_BASE_URL`, `HEAVY_CODING_LLM_API_KEYS` | Cloud heavy-coding model, endpoint, and 10-key pool |
-| `OLLAMA_FALLBACK_LLM_MODEL`, `OLLAMA_FALLBACK_LLM_BASE_URL`, `OLLAMA_FALLBACK_LLM_API_KEYS` | Cloud fallback model, endpoint, and 10-key pool |
+| `VISION_LLM_MODEL`, `VISION_LLM_BASE_URL`, `VISION_LLM_API_KEY_01` … `_10` | Cloud vision model, endpoint, and 10-key pool |
+| `HEAVY_CODING_LLM_MODEL`, `HEAVY_CODING_LLM_BASE_URL`, `HEAVY_CODING_LLM_API_KEY_01` … `_10` | Cloud heavy-coding model, endpoint, and 10-key pool |
+| `OLLAMA_FALLBACK_LLM_MODEL`, `OLLAMA_FALLBACK_LLM_BASE_URL`, `OLLAMA_FALLBACK_LLM_API_KEY_01` … `_10` | Cloud fallback model, endpoint, and 10-key pool |
 | `LLM_API_KEY`, `LLM_API_KEYS` | Legacy single-provider compatibility only; do not use in the new three-pool setup |
 | `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
    | `GITHUB_CLASSIC_TOKEN` | option C only: the classic fallback token (otherwise leave empty) |
@@ -131,18 +131,46 @@ LOCAL_LLM_API_KEY=ollama
 
 VISION_LLM_MODEL=gemini-3-flash-preview
 VISION_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-VISION_LLM_API_KEYS=vision-key-01,vision-key-02,vision-key-03,vision-key-04,vision-key-05,vision-key-06,vision-key-07,vision-key-08,vision-key-09,vision-key-10
+VISION_LLM_API_KEY_01=vision-key-01
+VISION_LLM_API_KEY_02=vision-key-02
+VISION_LLM_API_KEY_03=vision-key-03
+VISION_LLM_API_KEY_04=vision-key-04
+VISION_LLM_API_KEY_05=vision-key-05
+VISION_LLM_API_KEY_06=vision-key-06
+VISION_LLM_API_KEY_07=vision-key-07
+VISION_LLM_API_KEY_08=vision-key-08
+VISION_LLM_API_KEY_09=vision-key-09
+VISION_LLM_API_KEY_10=vision-key-10
 
 HEAVY_CODING_LLM_MODEL=gemini-3-flash-preview
 HEAVY_CODING_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-HEAVY_CODING_LLM_API_KEYS=coding-key-01,coding-key-02,coding-key-03,coding-key-04,coding-key-05,coding-key-06,coding-key-07,coding-key-08,coding-key-09,coding-key-10
+HEAVY_CODING_LLM_API_KEY_01=coding-key-01
+HEAVY_CODING_LLM_API_KEY_02=coding-key-02
+HEAVY_CODING_LLM_API_KEY_03=coding-key-03
+HEAVY_CODING_LLM_API_KEY_04=coding-key-04
+HEAVY_CODING_LLM_API_KEY_05=coding-key-05
+HEAVY_CODING_LLM_API_KEY_06=coding-key-06
+HEAVY_CODING_LLM_API_KEY_07=coding-key-07
+HEAVY_CODING_LLM_API_KEY_08=coding-key-08
+HEAVY_CODING_LLM_API_KEY_09=coding-key-09
+HEAVY_CODING_LLM_API_KEY_10=coding-key-10
 
 OLLAMA_FALLBACK_LLM_MODEL=gemini-3-flash-preview
 OLLAMA_FALLBACK_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-OLLAMA_FALLBACK_LLM_API_KEYS=fallback-key-01,fallback-key-02,fallback-key-03,fallback-key-04,fallback-key-05,fallback-key-06,fallback-key-07,fallback-key-08,fallback-key-09,fallback-key-10
+OLLAMA_FALLBACK_LLM_API_KEY_01=fallback-key-01
+OLLAMA_FALLBACK_LLM_API_KEY_02=fallback-key-02
+OLLAMA_FALLBACK_LLM_API_KEY_03=fallback-key-03
+OLLAMA_FALLBACK_LLM_API_KEY_04=fallback-key-04
+OLLAMA_FALLBACK_LLM_API_KEY_05=fallback-key-05
+OLLAMA_FALLBACK_LLM_API_KEY_06=fallback-key-06
+OLLAMA_FALLBACK_LLM_API_KEY_07=fallback-key-07
+OLLAMA_FALLBACK_LLM_API_KEY_08=fallback-key-08
+OLLAMA_FALLBACK_LLM_API_KEY_09=fallback-key-09
+OLLAMA_FALLBACK_LLM_API_KEY_10=fallback-key-10
 ```
 
-Routing is: deterministic normal code first; then Ollama for tasks it can handle;
+Each key is a separate `.env` entry, so the file stays readable. The parser also
+still accepts the older `*_API_KEYS=key1,key2` format. Routing is: deterministic normal code first; then Ollama for tasks it can handle;
 vision tasks use the vision pool; tasks classified as beyond Ollama use the heavy-coding
 pool; and Ollama failures/timeouts switch to the fallback pool. Each pool rotates its
 own keys. Keys are read only from environment variables, never written to Git, and
@@ -243,9 +271,9 @@ Set these variables when local-first mode is enabled:
 | --- | --- |
 | `LOCAL_LLM_MODEL` | Local Ollama/OpenAI-compatible model, for example `qwen2.5-coder:7b` |
 | `LOCAL_LLM_BASE_URL` | Local endpoint reachable from the container, for example `http://host.docker.internal:11434/v1` |
-| `VISION_LLM_*` | Dedicated cloud vision pool (`MODEL`, `BASE_URL`, `API_KEYS`) |
-| `HEAVY_CODING_LLM_*` | Dedicated cloud heavy-coding pool (`MODEL`, `BASE_URL`, `API_KEYS`) |
-| `OLLAMA_FALLBACK_LLM_*` | Dedicated cloud fallback pool (`MODEL`, `BASE_URL`, `API_KEYS`) |
+| `VISION_LLM_*` | Dedicated cloud vision pool (`MODEL`, `BASE_URL`, `API_KEY_01` through `API_KEY_10`) |
+| `HEAVY_CODING_LLM_*` | Dedicated cloud heavy-coding pool (`MODEL`, `BASE_URL`, `API_KEY_01` through `API_KEY_10`) |
+| `OLLAMA_FALLBACK_LLM_*` | Dedicated cloud fallback pool (`MODEL`, `BASE_URL`, `API_KEY_01` through `API_KEY_10`) |
 
 The old `CLOUD_LLM_*` variables remain supported as a migration fallback, but the new setup should use only the three dedicated pools above.
 

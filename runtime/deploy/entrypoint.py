@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -68,8 +69,24 @@ def toml_num(name: str, raw: str, kind: type) -> str:
 
 
 def key_pool(name: str) -> list[str]:
+    values: list[str] = []
     raw = os.environ.get(name, "")
-    return list(dict.fromkeys(item.strip() for item in raw.replace("\n", ",").split(",") if item.strip()))
+    values.extend(item.strip() for item in raw.replace("\n", ",").split(",") if item.strip())
+
+    # Docker .env files are clearer and safer when each secret occupies its own
+    # line. Support both ..._API_KEY_01 and the older ..._API_KEYS_01 spelling.
+    numbered_prefixes = [name]
+    if name.endswith("_API_KEYS"):
+        numbered_prefixes.append(name[:-1])
+    numbered: list[tuple[int, str, str]] = []
+    for variable, value in os.environ.items():
+        for prefix in numbered_prefixes:
+            match = re.fullmatch(re.escape(prefix) + r"_(\d+)", variable)
+            if match and value.strip():
+                numbered.append((int(match.group(1)), variable, value.strip()))
+                break
+    values.extend(value for _, _, value in sorted(numbered))
+    return list(dict.fromkeys(values))
 
 
 def append_pool(lines: list[str], section: str, model: str | None, base_url: str | None, keys: list[str], max_tokens: str, temperature: str) -> None:
