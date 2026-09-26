@@ -18,3 +18,19 @@ def test_browser_manager_session_lifecycle(tmp_path: Path):
             # Environment may not contain Playwright Chromium; manager behavior is still validated.
             assert "playwright" in str(exc).lower() or "executable" in str(exc).lower()
     asyncio.run(run())
+
+
+def test_browser_manager_ignores_closed_project_page(tmp_path: Path):
+    manager = BrowserManager(tmp_path)
+
+    class ClosedPage:
+        def is_closed(self):
+            return True
+
+    from app.platform.browser import BrowserSession
+
+    session = BrowserSession("closed01", "p1", tmp_path)
+    session.page = ClosedPage()
+    manager.sessions[session.id] = session
+
+    assert manager.for_project("p1") is None

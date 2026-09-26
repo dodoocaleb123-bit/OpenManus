@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,12 +27,17 @@ class BrowserSession:
         self.page = None
         self._lock = asyncio.Lock()
 
+    def _page_is_open(self) -> bool:
+        return self.page is not None and not self.page.is_closed()
+
     async def start(self, url: str | None = None, headless: bool = True) -> dict[str, Any]:
         async with self._lock:
-            if self.page:
+            if self._page_is_open():
                 if url:
                     await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 return await self.status()
+            if self.page is not None:
+                await self.close()
             try:
                 from playwright.async_api import async_playwright
             except ImportError as exc:
@@ -44,7 +50,10 @@ class BrowserSession:
                     # makes Chromium tabs crash on real pages.
                     "args": ["--disable-dev-shm-usage", "--disable-gpu"],
                 }
-                executable_path = os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
+                executable_path = os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH") or next(
+                    (path for candidate in ("chromium", "chromium-browser", "google-chrome") if (path := shutil.which(candidate))),
+                    None,
+                )
                 if executable_path:
                     launch_options["executable_path"] = executable_path
                 self.browser = await self.playwright.chromium.launch(**launch_options)
@@ -58,7 +67,7 @@ class BrowserSession:
             return await self.status()
 
     async def navigate(self, url: str) -> dict[str, Any]:
-        if not self.page:
+        if not self._page_is_open():
             await self.start(url)
         else:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -197,7 +206,7 @@ class BrowserManager:
     def for_project(self, project_id: str) -> BrowserSession | None:
         """The project's live shared session, if one is running."""
         for session in self.sessions.values():
-            if session.project_id == project_id and session.page is not None:
+            if session.project_id == project_id and session._page_is_open():
                 return session
         return None
 
