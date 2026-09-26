@@ -622,11 +622,14 @@ class LLM:
             logger.exception(f"Validation error")
             raise
         except OpenAIError as oe:
+            if self._fallback_config is not None and not self._using_fallback:
+                self._rotate_api_key()
             logger.exception(f"OpenAI API error")
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                self._rotate_api_key()
+                if not self._using_fallback:
+                    self._rotate_api_key()
                 logger.error("Rate limit exceeded; key failover was attempted when configured.")
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
@@ -787,11 +790,14 @@ class LLM:
             logger.error(f"Validation error in ask_with_images: {ve}")
             raise
         except OpenAIError as oe:
+            if self._fallback_config is not None and not self._using_fallback:
+                self._rotate_api_key()
             logger.error(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                self._rotate_api_key()
+                if not self._using_fallback:
+                    self._rotate_api_key()
                 logger.error("Rate limit exceeded; rotated to the next configured API key before retry.")
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
@@ -922,11 +928,14 @@ class LLM:
             logger.error(f"Validation error in ask_tool: {ve}")
             raise
         except OpenAIError as oe:
+            if self._fallback_config is not None and not self._using_fallback:
+                self._rotate_api_key()
             logger.error(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                self._rotate_api_key()
+                if not self._using_fallback:
+                    self._rotate_api_key()
                 logger.error("Rate limit exceeded; rotated to the next configured API key before retry.")
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
