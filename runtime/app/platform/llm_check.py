@@ -38,6 +38,11 @@ def llm_status() -> dict[str, Any]:
         problem = f"The LLM API key is missing or still a placeholder. {SETUP_HINT}"
     elif not getattr(settings, "model", ""):
         problem = f"No LLM model configured. {SETUP_HINT}"
+    fallback = None
+    try:
+        fallback = config.llm.get("cloud")
+    except Exception:
+        pass
     return {
         "configured": problem is None,
         "problem": problem,
@@ -47,6 +52,8 @@ def llm_status() -> dict[str, Any]:
         "supports_images": model_supports_images(getattr(settings, "model", "") or ""),
         "api_key_count": key_count,
         "failover_configured": key_count > 1,
+        "fallback_model": getattr(fallback, "model", None),
+        "fallback_configured": fallback is not None,
     }
 
 

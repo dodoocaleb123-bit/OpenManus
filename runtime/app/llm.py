@@ -299,6 +299,9 @@ class LLM:
         if not hasattr(self, "client"):  # Only initialize if not already initialized
             llm_config = llm_config or config.llm
             llm_config = llm_config.get(config_name, llm_config["default"])
+            self._config_name = config_name
+            self._fallback_config = config.llm.get("cloud") if config_name == "default" else None
+            self._using_fallback = False
             self.model = llm_config.model
             self.max_tokens = llm_config.max_tokens
             self.temperature = llm_config.temperature
@@ -348,6 +351,25 @@ class LLM:
         return AsyncOpenAI(api_key=api_key, base_url=self.base_url)
 
     def _rotate_api_key(self) -> None:
+        # Local-first mode: the first provider failure immediately makes the
+        # configured cloud provider available as a fallback. Subsequent cloud
+        # failures rotate through its own key pool.
+        if not self._using_fallback and self._fallback_config is not None:
+            fallback = self._fallback_config
+            self._using_fallback = True
+            self.model = fallback.model
+            self.max_tokens = fallback.max_tokens
+            self.temperature = fallback.temperature
+            self.api_type = fallback.api_type
+            self.api_version = fallback.api_version
+            self.base_url = fallback.base_url
+            configured_keys = list(getattr(fallback, "api_keys", []) or [])
+            self.api_keys = list(dict.fromkeys([fallback.api_key, *configured_keys]))
+            self._api_key_index = 0
+            self.api_key = self.api_keys[0]
+            self.client = self._make_client(self.api_key)
+            logger.warning("Local LLM unavailable; switched to the configured cloud fallback")
+            return
         if len(self.api_keys) <= 1:
             return
         self._api_key_index = (self._api_key_index + 1) % len(self.api_keys)
