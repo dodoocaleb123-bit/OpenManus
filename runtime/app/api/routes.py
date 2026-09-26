@@ -375,8 +375,6 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.post("/projects/{project_id}/chat")
     async def send_chat_message(project_id: str, body: ChatMessageCreate):
         project = project_or_404(project_id)
-        if problem := llm_problem():
-            raise HTTPException(status_code=503, detail=problem)
         text = body.message.strip()
         async with chat_lock(project_id):
             user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
@@ -388,6 +386,26 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "Hello! How can I help you today?",
                 )
                 return {"user": user_message, "assistant": assistant_message}
+            if re.search(r"\b(what can you do|what are you capable|your capabilities|can you access github|can you interact with github)\b", text, re.IGNORECASE):
+                github_ready = bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN"))
+                capabilities = (
+                    "I can work as your project assistant. I can:\n\n"
+                    "- inspect and explain your project files and repository structure;\n"
+                    "- create, edit, rename, and verify files;\n"
+                    "- run commands, tests, builds, and local validation;\n"
+                    "- use the shared browser to test web applications and inspect screenshots;\n"
+                    "- connect to an existing GitHub repository through the GitHub panel;\n"
+                    "- inspect Git status and diffs, create branches, commit changes, push changes, open pull requests, and publish projects;\n"
+                    "- keep build progress in this conversation; and\n"
+                    "- let you download generated project files from the Files panel.\n\n"
+                    f"GitHub access is currently {'configured' if github_ready else 'not configured'} in this deployment. "
+                    f"This project is {'connected to ' + project.repository if project.repository else 'not yet connected to a repository'}. "
+                    "When you ask me to make a change, I can carry it out rather than merely describe the steps."
+                )
+                assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", capabilities)
+                return {"user": user_message, "assistant": assistant_message}
+            if problem := llm_problem():
+                raise HTTPException(status_code=503, detail=problem)
             history = await asyncio.to_thread(store.list_chat_messages, project_id, 20)
             messages = [{"role": item.role, "content": item.content} for item in history]
             # Keep casual conversation fast on CPU-only local models. Load
@@ -419,12 +437,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "You are OpenManus Chat, a helpful conversational software-engineering assistant. "
                     "You are chatting with the owner of project {name}. The project workspace is {workspace}. "
                     "Answer naturally and concisely. You can discuss ideas, explain code, plan features, and "
-                    "answer questions. Do not claim to have edited files, run commands, browsed pages, or changed "
-                    "GitHub. This is the conversational side of one unified project assistant. If the user asks "
-                    "for implementation, explain the approach or tell them to ask you to make the change in this "
-                    "same conversation; do not pretend that an implementation task has already run. You have "
-                    "read-only repository context below; use it to answer architecture "
-                    "and code questions without claiming to edit files. Uploaded files in this project: {uploads}. "
+                    "answer questions. This is the conversational side of one unified project assistant. "
+                    "The assistant also has project tools for implementation tasks: it can inspect and edit files, "
+                    "run commands and tests, use the shared browser, and use the connected GitHub integration for "
+                    "repository status, branches, commits, pushes, pull requests, and publishing. Do not claim an "
+                    "action has already happened unless a build task or tool result provides evidence. If the user "
+                    "asks for implementation, the interface will deliver it to the build workflow. You have "
+                    "read-only repository context below; use it to answer architecture and code questions. "
+                    "Uploaded files in this project: {uploads}. "
                     "Images attached to the latest user message should be inspected directly.\n\n{context}"
                 ).format(
                     name=project.name,

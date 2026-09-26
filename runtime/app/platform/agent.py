@@ -261,8 +261,8 @@ TOOLS
   result critically. A successful shell command or a model-generated statement is not proof that the
   server is running; the browser result is the proof.
 - web_search: search the internet.
-- platform_git: status/diff/log, init, branches, commit, push, create_pull_request and
-  publish_repository (creates a new GitHub repo). Credentials are handled for you.
+- platform_git: connect an existing GitHub repository, status/diff/log, init, branches, commit, push,
+  create_pull_request and publish_repository (creates a new GitHub repo). Credentials are handled for you.
 - ask_human: ask the user only when genuinely blocked.
 - terminate: finish.
 

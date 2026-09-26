@@ -15,6 +15,7 @@ class PlatformGitTool(BaseTool):
     description: str = (
         "Version control for this project, executed by the platform with the user's GitHub credentials "
         "(you never see the token). Actions:\n"
+        "- connect {owner, repo, branch?}: clone an existing GitHub repository into this project workspace.\n"
         "- status / diff / log: inspect the repository.\n"
         "- init: create a git repository in the workspace (for new projects).\n"
         "- create_branch {branch} / checkout {branch}.\n"
@@ -30,10 +31,12 @@ class PlatformGitTool(BaseTool):
             "action": {
                 "type": "string",
                 "enum": [
-                    "status", "diff", "log", "init", "create_branch", "checkout", "commit", "push",
+                    "connect", "status", "diff", "log", "init", "create_branch", "checkout", "commit", "push",
                     "create_pull_request", "publish_repository",
                 ],
             },
+            "owner": {"type": "string", "description": "GitHub repository owner for connect"},
+            "repo": {"type": "string", "description": "GitHub repository name for connect"},
             "branch": {"type": "string", "description": "Branch name for create_branch/checkout"},
             "message": {"type": "string", "description": "Commit message"},
             "title": {"type": "string", "description": "Pull request title"},
@@ -69,6 +72,14 @@ class PlatformGitTool(BaseTool):
         try:
             svc = self._service()
             git = svc.git
+            if action == "connect":
+                owner = (kwargs.get("owner") or "").strip()
+                repo = (kwargs.get("repo") or "").strip()
+                if not owner or not repo:
+                    return self.fail_response("connect requires the GitHub owner and repository name")
+                result = await svc.connect(owner, repo, kwargs.get("branch") or None)
+                await self._notify("github.repository", f"Connected {owner}/{repo}", {"repository": f"{owner}/{repo}", "project": result["project"].model_dump(mode="json")})
+                return self.success_response(f"Connected GitHub repository {owner}/{repo} on branch {result['git'].get('branch') or 'default'}")
             if action == "status":
                 return self.success_response(await git.status())
             if action == "diff":
