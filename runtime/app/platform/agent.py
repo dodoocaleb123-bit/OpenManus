@@ -311,6 +311,8 @@ class PlatformManus(Manus):
         inbox: asyncio.Queue | None = None,
         ask: Callable[[str], Awaitable[Optional[str]]] | None = None,
         extra_tools: list[BaseTool] | None = None,
+        llm: Any = None,
+        max_steps: int | None = None,
     ) -> "PlatformManus":
         ws = Path(workspace).resolve()
         tools: list[BaseTool] = [
@@ -335,7 +337,8 @@ class PlatformManus(Manus):
         return await cls.create(
             available_tools=ToolCollection(*tools),
             system_prompt=system_prompt,
-            max_steps=_int_env("AGENT_MAX_STEPS", 40, 5, 500),
+            llm=llm,
+            max_steps=max_steps or _int_env("AGENT_MAX_STEPS", 40, 5, 500),
             emit=emit,
             inbox=inbox,
         )

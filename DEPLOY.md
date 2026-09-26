@@ -209,7 +209,7 @@ automatically.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AGENT_MAX_STEPS` | 40 | Tool-using steps per implementation or repair pass |
+| `AGENT_MAX_STEPS` | 40 | Upper bound for adaptive agent steps; simple requests use at most 6 and normal requests at most 20 |
 | `AGENT_MAX_REPAIR_CYCLES` | 3 | Validation-driven repair passes after implementation |
 | `AGENT_COMMAND_TIMEOUT` | 300 | Seconds before a single shell command is interrupted |
 | `HUMAN_REPLY_TIMEOUT` | 900 | Seconds the agent waits for your answer before continuing on its own |
@@ -217,6 +217,23 @@ automatically.
 | `LLM_SUPPORTS_IMAGES` | auto | `true`/`false` if vision support is misdetected for your model |
 | `LLM_REASONING_MODEL` | auto | `true`/`false` if your model rejects `temperature`/`max_tokens` |
 | `PLATFORM_USERNAME` | admin | Login username |
+
+### Local-first hybrid routing
+
+When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses the local model for normal coding and conversation. Simple create-and-verify file requests use a deterministic fast path and do not call an LLM. Large application, browser, screenshot, and visual tasks use the configured cloud provider first, then retain the normal fallback behavior.
+
+Set these variables when local-first mode is enabled:
+
+| Variable | Purpose |
+| --- | --- |
+| `LOCAL_LLM_MODEL` | Local Ollama/OpenAI-compatible model, for example `qwen2.5-coder:7b` |
+| `LOCAL_LLM_BASE_URL` | Local endpoint reachable from the container, for example `http://host.docker.internal:11434/v1` |
+| `CLOUD_LLM_MODEL` | Cloud coding model used for heavy and browser tasks |
+| `CLOUD_LLM_BASE_URL` | Cloud provider OpenAI-compatible endpoint |
+| `CLOUD_LLM_API_KEY` | Cloud provider key |
+| `CLOUD_LLM_API_KEYS` | Optional comma- or newline-separated cloud failover keys |
+
+If the `CLOUD_LLM_*` variables are omitted while local-first mode is enabled, the regular `LLM_*` provider is used as the cloud fallback.
 
 ## LLM provider settings
 

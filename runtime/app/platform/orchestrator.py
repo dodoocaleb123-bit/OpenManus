@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from app.logger import logger
@@ -13,6 +15,30 @@ from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskSta
 from app.platform.store import PlatformStore
 
 AgentFactory = Callable[..., Awaitable[Any]]
+
+
+def _task_complexity(prompt: str, browser: bool = False) -> str:
+    text = prompt.lower()
+    if browser or re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", text):
+        return "heavy"
+    if re.search(r"\b(large|heavy|full application|entire app|production|multi-page|multiple features|complex game)\b", text):
+        return "heavy"
+    if re.search(r"\b(create|make)\s+(?:a\s+)?file\b", text) and len(text) < 500:
+        return "simple"
+    return "normal"
+
+
+def _task_step_budget(prompt: str, browser: bool = False) -> int:
+    complexity = _task_complexity(prompt, browser)
+    try:
+        configured = int(os.environ.get("AGENT_MAX_STEPS", "40"))
+    except ValueError:
+        configured = 40
+    if complexity == "simple":
+        return min(configured, 6)
+    if complexity == "heavy":
+        return max(configured, 40)
+    return min(configured, 20)
 
 
 def _human_timeout() -> float:
@@ -136,8 +162,14 @@ class AgentOrchestrator:
     # ---------------------------------------------------------------- agent
 
     async def _default_agent_factory(self, *, project: Project, task: Task, emit, inbox, ask, extra_tools):
+        from app.config import config
+        from app.llm import LLM
         from app.platform.agent import PlatformManus
 
+        browser_task = bool(task.browser_session_id) or _task_complexity(task.prompt, False) == "heavy" and bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website)\b", task.prompt, re.IGNORECASE))
+        complexity = _task_complexity(task.prompt, bool(task.browser_session_id))
+        provider_name = "vision" if browser_task and "vision" in config.llm else "cloud"
+        cloud_llm = LLM(config_name=provider_name) if complexity == "heavy" and provider_name in config.llm else None
         return await PlatformManus.create_for_project(
             project_name=project.name,
             workspace=project.workspace,
@@ -147,6 +179,8 @@ class AgentOrchestrator:
             inbox=inbox,
             ask=ask,
             extra_tools=extra_tools,
+            llm=cloud_llm,
+            max_steps=_task_step_budget(task.prompt, bool(task.browser_session_id)),
         )
 
     def _browser_tool(self, task: Task, project: Project):
@@ -167,6 +201,41 @@ class AgentOrchestrator:
 
         return PlatformBrowserTool(session=existing, session_factory=factory)
 
+    async def _try_fast_file_task(self, task: Task, project: Project, emit) -> bool:
+        """Complete small create-and-verify file requests without an LLM round trip."""
+        if _task_complexity(task.prompt) != "simple":
+            return False
+        prompt = task.prompt.strip()
+        match = re.search(r"(?:create|make)\s+(?:a\s+)?file\s+(?:called|named)\s+[`\"']?([A-Za-z0-9_.-]+)[`\"']?", prompt, re.IGNORECASE)
+        content_match = re.search(r"containing\s+(?:the\s+words\s+)?[`\"']?(.+?)[`\"']?(?:,?\s+then\s+verify|\s+and\s+verify|$)", prompt, re.IGNORECASE)
+        if not match or not content_match:
+            return False
+        filename = match.group(1)
+        content = content_match.group(1).strip().rstrip(".")
+        path = (Path(project.workspace) / filename).resolve()
+        root = Path(project.workspace).resolve()
+        if path.parent != root or not content or ".." in Path(filename).parts:
+            return False
+        await emit("fast.started", f"Fast path: creating and verifying {filename}", {"path": str(path)})
+        if path.exists():
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                return False
+            action = "already existed with matching content"
+        else:
+            path.write_text(content, encoding="utf-8")
+            action = "created"
+        if path.read_text(encoding="utf-8") != content:
+            raise RuntimeError(f"Fast verification failed for {filename}")
+        task.validation = {"passed": True, "results": [{"command": f"verify {filename}", "ok": True, "output": f"{filename} exists and contains the requested content."}]}
+        task.result = f"Created and verified `{filename}` containing `{content}` ({action})."
+        task.checkpoint = "validated"
+        await self.store.save_task(task)
+        await emit("coding.validation", "Fast-path validation passed", {"iteration": 1, "results": task.validation["results"], "fast_path": True})
+        await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
+        task.status = TaskStatus.SUCCEEDED
+        await emit("task.succeeded", "Fast operation completed and verified", {"result": task.result, "validation": task.validation, "fast_path": True})
+        return True
+
     async def run_task(self, task: Task) -> None:
         self._running.setdefault(task.id, None)
         task.status = TaskStatus.RUNNING
@@ -185,13 +254,14 @@ class AgentOrchestrator:
             project = self.store.get_project(task.project_id)
             if not project:
                 raise RuntimeError("Project no longer exists")
-            if self.check_llm and (problem := llm_problem()):
-                raise RuntimeError(problem)
-
-            await self.store.emit(Event(task_id=task.id, type="workspace.ready", message=f"Workspace ready: {project.workspace}", data={"workspace": project.workspace}))
-
             async def emit(type_: str, message: str, data: dict) -> None:
                 await self.store.emit(Event(task_id=task.id, type=type_, message=message, data=data))
+
+            await emit("workspace.ready", f"Workspace ready: {project.workspace}", {"workspace": project.workspace})
+            if await self._try_fast_file_task(task, project, emit):
+                return
+            if self.check_llm and (problem := llm_problem()):
+                raise RuntimeError(problem)
 
             extra_tools: list[Any] = []
             browser_tool = self._browser_tool(task, project)
