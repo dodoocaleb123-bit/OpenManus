@@ -99,7 +99,9 @@ python run_platform.py                              # http://127.0.0.1:8000
 ```
 
 Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fallback, `PLATFORM_PASSWORD` (Basic auth),
-`PLATFORM_DATA_DIR` (database + workspaces location, default `workspace/`).
+`PLATFORM_REQUIRE_AUTH=true` (fail closed if a password is missing),
+`PLATFORM_MAX_CONCURRENT_TASKS`, `PLATFORM_MAX_UPLOAD_MB`, and `PLATFORM_DATA_DIR`
+(database + workspaces location, default `workspace/`).
 
 ## Tests
 
@@ -117,5 +119,8 @@ page are faked; git operations run against local bare repositories.
   are scrubbed from its environment, but files in the container, including the
   generated `config/config.toml`, are readable to it.
 - Browser sessions live in the server process and are not restored after a restart.
-- Tasks in different projects run concurrently in one process; size the instance
-  accordingly.
+- Tasks in different projects may run concurrently unless
+  `PLATFORM_MAX_CONCURRENT_TASKS` is set. The Render template sets this to `1`.
+- The right context panel includes GitHub, Files, and Evidence tabs. Evidence shows
+  plans, validation, artifacts, recovery state, checkpoints, and source URLs from
+  recorded task evidence.

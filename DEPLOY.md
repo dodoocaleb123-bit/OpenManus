@@ -117,6 +117,10 @@ How the platform handles the tokens, whichever option you pick:
 | `LLM_API_KEY`, `LLM_API_KEYS` | Legacy single-provider compatibility only; do not use in the new three-pool setup |
 | `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
    | `GITHUB_CLASSIC_TOKEN` | option C only: the classic fallback token (otherwise leave empty) |
+   | `PLATFORM_PASSWORD` | Required for a protected deployment; Render generates one in the Blueprint |
+   | `PLATFORM_REQUIRE_AUTH` | `true` in production; refuses to start if no password is configured |
+   | `PLATFORM_MAX_CONCURRENT_TASKS` | `1` for a 1c-2g instance; increase only after load testing |
+   | `PLATFORM_MAX_UPLOAD_MB` | `250` default maximum upload size |
 
 4. Click **Apply** (or **Deploy Blueprint**).
 
@@ -236,7 +240,9 @@ automatically.
 
 - **Left:** projects and task history. **Middle:** live activity feed (plan, tool
   calls, command output, validation, questions) and the message box. **Right:** the
-  shared browser, plus GitHub and Files tabs.
+  shared browser, plus GitHub, Files, and **Evidence** tabs. Evidence shows the
+  selected task's plan, validation, artifacts, recovery state, checkpoints, and
+  source URLs when available.
 - **Shared browser:** the agent opens the app it is building (e.g.
   `http://localhost:3000`) and you see the same page. Click on the screenshot to click
   in the page; type into it using the keyboard buttons. Use it to log in somewhere
@@ -245,7 +251,22 @@ automatically.
   next step. **Stop agent** cancels; **Retry** (in Task history) re-runs a failed or
   cancelled task in the same workspace.
 - One task runs per project at a time. Different projects can run in parallel,
-  though a `1c-2g` instance is comfortable with one or two.
+  though `PLATFORM_MAX_CONCURRENT_TASKS=1` is recommended on a `1c-2g` instance.
+
+### Production safety controls
+
+The production template enables authentication and bounded resource use. The API
+also rejects cross-project browser sessions and uploaded-file IDs, confines file
+downloads to the selected workspace, strips credentials from agent processes, and
+keeps a redacted `audit.jsonl` record for task creation, task deletion, project
+deletion, and GitHub publishing. Secrets and user prompts are not written to that
+audit file.
+
+Do not expose the service without `PLATFORM_PASSWORD`. Destructive actions such as
+deleting a project or build, publishing a repository, force-pushing, changing
+credentials, and destructive shell commands should be reviewed in the UI before
+they are performed. The agent is instructed not to perform destructive actions
+silently, while the server blocks deletion of running tasks/projects.
 
 ## Agent tuning (Environment variables)
 

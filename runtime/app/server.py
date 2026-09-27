@@ -71,9 +71,22 @@ def create_app(
         return FileResponse(WEB / "index.html")
 
     password = password if password is not None else os.environ.get("PLATFORM_PASSWORD", "")
+    if os.environ.get("PLATFORM_REQUIRE_AUTH", "").casefold() in {"1", "true", "yes", "on"} and not password:
+        raise RuntimeError("PLATFORM_REQUIRE_AUTH is enabled but PLATFORM_PASSWORD is not configured")
     if password:
         username = username or os.environ.get("PLATFORM_USERNAME") or "admin"
         application.add_middleware(BasicAuthMiddleware, username=username, password=password)
+
+    @application.middleware("http")
+    async def security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
     return application
 

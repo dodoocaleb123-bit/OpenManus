@@ -157,3 +157,9 @@ services:
         value: admin
       - key: PLATFORM_PASSWORD
         generateValue: true
+      - key: PLATFORM_REQUIRE_AUTH
+        value: "true"
+      - key: PLATFORM_MAX_CONCURRENT_TASKS
+        value: "1"
+      - key: PLATFORM_MAX_UPLOAD_MB
+        value: "250"

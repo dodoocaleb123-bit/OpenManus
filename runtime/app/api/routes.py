@@ -230,6 +230,13 @@ IMAGE_ORDINALS = {
 }
 
 
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
 def referenced_images(text: str, uploads: list[UploadedFile], attachment_ids: list[str]) -> list[UploadedFile]:
     """Return only images explicitly attached or referenced by this message."""
     images = [item for item in uploads if (item.content_type or "").startswith("image/") and Path(item.stored_path).is_file()]
@@ -337,6 +344,18 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     router = APIRouter(prefix="/api")
     chat_locks: dict[str, asyncio.Lock] = {}
 
+    def audit(action: str, **data: object) -> None:
+        """Write a small redacted audit record; never include prompts or secrets."""
+        record = {"ts": time.time(), "action": action, **data}
+        try:
+            audit_path = store.root / "audit.jsonl"
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with audit_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
+        except OSError:
+            # Observability must never prevent a user task from running.
+            pass
+
     def project_or_404(project_id: str):
         project = store.get_project(project_id)
         if not project:
@@ -371,6 +390,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 status_code=409,
                 detail="An agent task is already running in this project. Send a message, or cancel it first.",
             )
+        global_limit = _env_int("PLATFORM_MAX_CONCURRENT_TASKS", 0)
+        if global_limit:
+            active_count = sum(1 for task in store.tasks.values() if orchestrator.is_running(task.id))
+            if active_count >= global_limit:
+                raise HTTPException(status_code=429, detail=f"The platform is at its configured task limit ({global_limit}). Cancel or wait for an active task to finish.")
         plan = plan or unified_capability_plan(prompt, has_browser_session=bool(browser_session_id))
         task = store.create_task(project_id, prompt.strip())
         task.plan = plan
@@ -390,6 +414,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             task.browser_session_id = browser_session_id
         await store.save_task(task)
         await store.emit(Event(task_id=task.id, type="task.planned", message="Plan created", data={"plan": plan}))
+        audit("task.created", project_id=project_id, task_id=task.id, intent=plan.get("intent"), capabilities=plan.get("capabilities", []))
         orchestrator.start(task)
         return task, user_message, assistant_message
 
@@ -413,6 +438,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 "classic_fallback_configured": bool(os.getenv("GITHUB_CLASSIC_TOKEN")),
             },
             "auth": {"enabled": bool(os.getenv("PLATFORM_PASSWORD"))},
+            "limits": {
+                "max_concurrent_tasks": _env_int("PLATFORM_MAX_CONCURRENT_TASKS", 0),
+                "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            },
         }
 
     # ---------------------------------------------------------- projects
@@ -451,6 +480,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             projects_root = (store.root / "projects").resolve()
             if root.parent == projects_root and root != projects_root:
                 shutil.rmtree(root, ignore_errors=True)
+        audit("project.deleted", project_id=project_id)
         return {"deleted": project_id}
 
     @router.get("/projects/{project_id}/files")
@@ -785,6 +815,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         project = project_or_404(project_id)
         try:
             result = await ProjectGit(store, project).publish(body.name, body.private, body.description)
+            audit("github.published", project_id=project_id, repository=body.name, private=body.private)
             return {**result, "project": store.get_project(project_id)}
         except (GitError, GitHubError, ValueError, RuntimeError) as exc:
             raise git_error(exc) from exc
@@ -880,6 +911,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             raise HTTPException(status_code=409, detail="Stop the running build before deleting it.")
         if not store.delete_task(task_id):
             raise HTTPException(status_code=404, detail="Build activity not found")
+        audit("task.deleted", project_id=task.project_id, task_id=task_id)
         return {"deleted": task_id}
 
     @router.post("/tasks/{task_id}/resume")
