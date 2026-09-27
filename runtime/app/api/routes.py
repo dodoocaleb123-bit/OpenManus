@@ -863,6 +863,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     async def get_task(task_id: str):
         return task_or_404(task_id)
 
+    @router.get("/tasks/{task_id}/evidence")
+    async def task_evidence(task_id: str):
+        task = task_or_404(task_id)
+        return {"task_id": task.id, "evidence": task.evidence, "artifacts": task.artifacts, "validation": task.validation, "recovery": task.recovery}
+
+    @router.get("/tasks/{task_id}/checkpoints")
+    async def task_checkpoints(task_id: str):
+        task_or_404(task_id)
+        return await asyncio.to_thread(store.list_checkpoints, task_id)
+
     @router.delete("/tasks/{task_id}")
     async def delete_task(task_id: str):
         task = task_or_404(task_id)

@@ -50,6 +50,11 @@ class Task(BaseModel):
     coding_iteration: int = 0
     validation: Optional[dict[str, Any]] = None
     plan: Optional[dict[str, Any]] = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any] | str] = Field(default_factory=list)
+    recovery: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: Optional[str] = None
+    last_heartbeat: Optional[datetime] = None
     # Live-only (not persisted): question the agent is waiting on the user to answer.
     pending_question: Optional[str] = None
 

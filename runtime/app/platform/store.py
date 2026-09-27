@@ -63,6 +63,11 @@ class PlatformStore:
                     coding_iteration INTEGER NOT NULL DEFAULT 0,
                     validation TEXT,
                     plan TEXT,
+                    evidence TEXT,
+                    artifacts TEXT,
+                    recovery TEXT,
+                    idempotency_key TEXT,
+                    last_heartbeat TEXT,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
                 CREATE TABLE IF NOT EXISTS events (
@@ -96,6 +101,12 @@ class PlatformStore:
                 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_chat_project ON chat_messages(project_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_uploads_project ON uploaded_files(project_id, created_at);
+                CREATE TABLE IF NOT EXISTS task_checkpoints (
+                    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, name TEXT NOT NULL,
+                    data TEXT NOT NULL, created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_checkpoints_task ON task_checkpoints(task_id, created_at);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -107,6 +118,9 @@ class PlatformStore:
                 db.execute("ALTER TABLE tasks ADD COLUMN validation TEXT")
             if "plan" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN plan TEXT")
+            for name, definition in (("evidence", "TEXT"), ("artifacts", "TEXT"), ("recovery", "TEXT"), ("idempotency_key", "TEXT"), ("last_heartbeat", "TEXT")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
 
     @staticmethod
     def _dt(value: str | None) -> datetime | None:
@@ -131,6 +145,11 @@ class PlatformStore:
             coding_iteration=row["coding_iteration"] if "coding_iteration" in row.keys() else 0,
             validation=json.loads(row["validation"]) if row["validation"] else None,
             plan=json.loads(row["plan"]) if "plan" in row.keys() and row["plan"] else None,
+            evidence=json.loads(row["evidence"]) if "evidence" in row.keys() and row["evidence"] else {},
+            artifacts=json.loads(row["artifacts"]) if "artifacts" in row.keys() and row["artifacts"] else [],
+            recovery=json.loads(row["recovery"]) if "recovery" in row.keys() and row["recovery"] else {},
+            idempotency_key=row["idempotency_key"] if "idempotency_key" in row.keys() else None,
+            last_heartbeat=PlatformStore._dt(row["last_heartbeat"]) if "last_heartbeat" in row.keys() else None,
         )
 
     @staticmethod
@@ -197,6 +216,7 @@ class PlatformStore:
     def delete_task(self, task_id: str) -> bool:
         with self._connect() as db:
             db.execute("DELETE FROM events WHERE task_id=?", (task_id,))
+            db.execute("DELETE FROM task_checkpoints WHERE task_id=?", (task_id,))
             result = db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         return result.rowcount > 0
 
@@ -206,6 +226,7 @@ class PlatformStore:
             if not row:
                 return None
             db.execute("DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?)", (project_id,))
+            db.execute("DELETE FROM task_checkpoints WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?)", (project_id,))
             db.execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
             db.execute("DELETE FROM uploaded_files WHERE project_id=?", (project_id,))
             db.execute("DELETE FROM chat_messages WHERE project_id=?", (project_id,))
@@ -217,8 +238,8 @@ class PlatformStore:
             raise KeyError(f"Unknown project: {project_id}")
         task = Task(project_id=project_id, prompt=prompt)
         with self._connect() as db:
-            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None))
+            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan,evidence,artifacts,recovery,idempotency_key,last_heartbeat) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None))
         return task
 
     @staticmethod
@@ -279,10 +300,21 @@ class PlatformStore:
     async def save_task(self, task: Task) -> None:
         async with self._lock:
             with self._connect() as db:
-                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=? WHERE id=?""",
+                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=?, evidence=?, artifacts=?, recovery=?, idempotency_key=?, last_heartbeat=? WHERE id=?""",
                            (task.status.value, task.started_at.isoformat() if task.started_at else None,
                             task.finished_at.isoformat() if task.finished_at else None, task.result, task.error,
-                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, task.id))
+                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.id))
+
+    async def save_checkpoint(self, task_id: str, name: str, data: dict) -> None:
+        from uuid import uuid4
+        async with self._lock:
+            with self._connect() as db:
+                db.execute("INSERT INTO task_checkpoints(id,task_id,name,data,created_at) VALUES(?,?,?,?,?)", (uuid4().hex[:12], task_id, name, json.dumps(data), datetime.now(timezone.utc).isoformat()))
+
+    def list_checkpoints(self, task_id: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("SELECT name,data,created_at FROM task_checkpoints WHERE task_id=? ORDER BY created_at", (task_id,)).fetchall()
+        return [{"name": row["name"], "data": json.loads(row["data"]), "created_at": row["created_at"]} for row in rows]
 
     async def emit(self, event: Event) -> None:
         async with self._lock:

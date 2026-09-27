@@ -13,6 +13,7 @@ from app.platform.coding_loop import CodingLoop
 from app.platform.llm_check import llm_problem
 from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 from app.platform.store import PlatformStore
+from app.platform.verification import FailureClassifier, VerificationEngine, stable_operation_id
 
 AgentFactory = Callable[..., Awaitable[Any]]
 
@@ -250,13 +251,16 @@ class AgentOrchestrator:
         if path.read_text(encoding="utf-8") != content:
             raise RuntimeError(f"Fast verification failed for {filename}")
         task.validation = {"passed": True, "results": [{"command": f"verify {filename}", "ok": True, "output": f"{filename} exists and contains the requested content."}]}
+        task.evidence["verification"] = VerificationEngine.task_completion(project.workspace, task.validation, [{"path": filename}])
+        task.artifacts = [{"path": filename, "kind": "workspace_file", "verified": True}]
         task.result = f"Created and verified `{filename}` containing `{content}` ({action})."
         task.checkpoint = "validated"
         await self.store.save_task(task)
+        await self.store.save_checkpoint(task.id, "validated", {"verification": task.evidence["verification"], "artifacts": task.artifacts})
         await emit("coding.validation", "Fast-path validation passed", {"iteration": 1, "results": task.validation["results"], "fast_path": True})
         await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
         task.status = TaskStatus.SUCCEEDED
-        await emit("task.succeeded", "Fast operation completed and verified", {"result": task.result, "validation": task.validation, "fast_path": True})
+        await emit("task.succeeded", "Fast operation completed and verified", {"result": task.result, "validation": task.validation, "evidence": task.evidence, "artifacts": task.artifacts, "fast_path": True})
         return True
 
     async def run_task(self, task: Task) -> None:
@@ -267,12 +271,16 @@ class AgentOrchestrator:
         task.finished_at = None
         task.error = None
         task.checkpoint = "running"
+        task.last_heartbeat = datetime.now(timezone.utc)
+        task.idempotency_key = task.idempotency_key or stable_operation_id(task.id, "task", task.prompt)
         await self.store.save_task(task)
+        await self.store.save_checkpoint(task.id, "started", {"attempt": task.attempt, "idempotency_key": task.idempotency_key})
         await self.store.emit(Event(task_id=task.id, type="task.started", message="Agent started", data={"attempt": task.attempt}))
 
         agent = None
         research_only = _is_browser_research_task(task.prompt)
         research_snapshot: dict[str, Any] | None = None
+        retry_task = False
         inbox: asyncio.Queue = asyncio.Queue()
         self._inboxes[task.id] = inbox
         try:
@@ -280,6 +288,14 @@ class AgentOrchestrator:
             if not project:
                 raise RuntimeError("Project no longer exists")
             async def emit(type_: str, message: str, data: dict) -> None:
+                task.last_heartbeat = datetime.now(timezone.utc)
+                if type_ == "agent.tool_result":
+                    evidence = data.get("evidence") or {}
+                    artifacts = data.get("artifacts") or []
+                    task.evidence.setdefault("tool_results", []).append({"tool": data.get("tool"), "ok": data.get("ok"), "evidence": evidence, "retryable": data.get("retryable", False)})
+                    if artifacts:
+                        task.artifacts.extend(artifacts)
+                    await self.store.save_task(task)
                 await self.store.emit(Event(task_id=task.id, type=type_, message=message, data=data))
 
             await emit("workspace.ready", f"Workspace ready: {project.workspace}", {"workspace": project.workspace})
@@ -355,8 +371,10 @@ class AgentOrchestrator:
                 task.result = summary or "Browser research completed."
                 task.validation = {"passed": True, "results": [], "skipped": True, "reason": "research-only task"}
                 task.checkpoint = "research_complete"
+                task.evidence["verification"] = VerificationEngine.task_completion(project.workspace, task.validation, skipped=True)
                 task.status = TaskStatus.SUCCEEDED
                 await self.store.save_task(task)
+                await self.store.save_checkpoint(task.id, "research_complete", {"verified": True, "evidence": task.evidence["verification"]})
                 await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
                 await emit("task.succeeded", "Browser research completed without coding validation", {"result": task.result, "research_only": True})
                 return
@@ -372,8 +390,10 @@ class AgentOrchestrator:
                 task.coding_iteration = cycle + 1
                 payload = [r.as_dict() for r in validation_results]
                 task.validation = {"results": payload, "passed": all(r.ok for r in validation_results)}
-                task.checkpoint = "validation_passed" if task.validation["passed"] else "validation_failed"
+                task.evidence["verification"] = VerificationEngine.task_completion(project.workspace, task.validation, task.artifacts)
+                task.checkpoint = "validation_passed" if task.evidence["verification"]["passed"] else "validation_failed"
                 await self.store.save_task(task)
+                await self.store.save_checkpoint(task.id, task.checkpoint, {"iteration": task.coding_iteration, "verification": task.evidence["verification"]})
                 await emit("coding.validation", "Validation passed" if task.validation["passed"] else "Validation failed", {"iteration": task.coding_iteration, "results": payload})
                 if task.validation["passed"] or cycle >= max_cycles:
                     break
@@ -393,10 +413,10 @@ class AgentOrchestrator:
             task.result = summary
             assistant_reply = summary or task.error or "Task completed."
             await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", assistant_reply)
-            if task.validation and task.validation.get("passed"):
+            if task.evidence.get("verification", {}).get("passed"):
                 task.status = TaskStatus.SUCCEEDED
                 task.checkpoint = "validated"
-                await emit("task.succeeded", "Assistant response completed and validation passed", {"result": summary, "validation": task.validation})
+                await emit("task.succeeded", "Assistant response completed and validation passed", {"result": summary, "validation": task.validation, "evidence": task.evidence, "artifacts": task.artifacts})
             else:
                 task.status = TaskStatus.FAILED
                 task.error = "Automatic validation still fails."
@@ -432,6 +452,20 @@ class AgentOrchestrator:
                 await emit("task.succeeded", "Browser page extracted; model summary was unavailable", {"result": task.result, "fallback": True})
                 return
             raw_error = str(exc) or exc.__class__.__name__
+            category = FailureClassifier.classify(exc)
+            task.recovery = FailureClassifier.policy(category, task.attempt) | {"last_error": raw_error}
+            task.evidence["failure"] = {"category": category, "message": raw_error}
+            await self.store.save_task(task)
+            await self.store.save_checkpoint(task.id, "failure", {"category": category, "attempt": task.attempt, "error": raw_error})
+            await self.store.emit(Event(task_id=task.id, type="task.recovery", message=f"Failure classified as {category}", data=task.recovery))
+            if task.recovery.get("retryable"):
+                task.status = TaskStatus.QUEUED
+                task.error = f"Retry scheduled after {category}."
+                task.checkpoint = f"retry_scheduled:{category}"
+                retry_task = True
+                await self.store.save_task(task)
+                await self.store.emit(Event(task_id=task.id, type="task.retry_scheduled", message=task.error, data=task.recovery))
+                return
             lower_error = raw_error.lower()
             retry_cause = getattr(getattr(exc, "last_attempt", None), "exception", lambda: None)()
             timeout_error = "timeout" in lower_error or "timed out" in lower_error or "apitimeout" in lower_error
@@ -454,7 +488,7 @@ class AgentOrchestrator:
             await self.store.emit(Event(task_id=task.id, type="task.failed", message=task.error, data={"error": task.error}))
         finally:
             task.finished_at = datetime.now(timezone.utc)
-            if task.status not in TERMINAL_STATUSES:
+            if task.status not in TERMINAL_STATUSES and not retry_task:
                 task.status = TaskStatus.FAILED
             await self.store.save_task(task)
             if agent is not None:
@@ -473,3 +507,6 @@ class AgentOrchestrator:
                 question[1].cancel()
             self._inboxes.pop(task.id, None)
             self._running.pop(task.id, None)
+            if retry_task:
+                await asyncio.sleep(min(2 ** max(0, task.attempt - 1), 8))
+                self.start(task)
