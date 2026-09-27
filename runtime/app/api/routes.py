@@ -28,6 +28,9 @@ from app.platform.github import GitHubClient, GitHubError
 from app.platform.llm_check import llm_problem, llm_status
 from app.platform.models import Event, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus, UploadedFile
 from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning, _is_browser_research_task
+from app.platform.observability import PlatformObservability
+from app.platform.repository_map import build_repository_map
+from app.platform.sources import extract_sources
 from app.platform.store import PlatformStore
 
 # Proxies (Render included) close idle HTTP connections; a comment frame every
@@ -343,6 +346,7 @@ async def sse_event_stream(
 def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRouter:
     router = APIRouter(prefix="/api")
     chat_locks: dict[str, asyncio.Lock] = {}
+    observability = PlatformObservability(store.root)
 
     def audit(action: str, **data: object) -> None:
         """Write a small redacted audit record; never include prompts or secrets."""
@@ -371,6 +375,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             raise HTTPException(status_code=404, detail="Task not found")
         task.pending_question = orchestrator.pending_question(task_id)
         return task
+    def require_confirmation(request: Request, action: str) -> None:
+        """Require an explicit acknowledgement for irreversible API actions."""
+        value = request.headers.get("x-openmanus-confirm", "").casefold()
+        if value not in {"1", "true", "yes", "confirm"}:
+            raise HTTPException(
+                status_code=428,
+                detail=f"Explicit confirmation is required for {action}. Set X-OpenManus-Confirm: true after reviewing the action.",
+            )
 
     async def launch_task(project_id: str, prompt: str, browser_session_id: str | None = None, plan: dict | None = None):
         """Start the build agent while keeping its messages in the project chat."""
@@ -442,7 +454,12 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 "max_concurrent_tasks": _env_int("PLATFORM_MAX_CONCURRENT_TASKS", 0),
                 "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
             },
+            "observability": observability.snapshot(store),
         }
+    @router.get("/metrics")
+    async def platform_metrics():
+        """Return durable, redacted operational metrics for local administration."""
+        return observability.snapshot(store)
 
     # ---------------------------------------------------------- projects
 
@@ -460,6 +477,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.get("/projects/{project_id}")
     async def get_project(project_id: str):
         return project_or_404(project_id)
+    @router.get("/projects/{project_id}/repository-map")
+    async def repository_map(project_id: str):
+        project = project_or_404(project_id)
+        return await asyncio.to_thread(build_repository_map, project.workspace)
 
     @router.patch("/projects/{project_id}")
     async def rename_project(project_id: str, body: ProjectRename):
@@ -470,8 +491,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.delete("/projects/{project_id}")
-    async def delete_project(project_id: str):
+    async def delete_project(project_id: str, request: Request):
         project_or_404(project_id)
+        require_confirmation(request, "project deletion")
         if any(t.project_id == project_id and orchestrator.is_running(t.id) for t in store.tasks.values()):
             raise HTTPException(status_code=409, detail="Stop the running build before deleting this project.")
         workspace = store.delete_project(project_id)
@@ -811,8 +833,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             raise git_error(exc) from exc
 
     @router.post("/projects/{project_id}/github/publish")
-    async def publish_repository(project_id: str, body: RepositoryPublish):
+    async def publish_repository(project_id: str, body: RepositoryPublish, request: Request):
         project = project_or_404(project_id)
+        require_confirmation(request, "GitHub repository publishing")
         try:
             result = await ProjectGit(store, project).publish(body.name, body.private, body.description)
             audit("github.published", project_id=project_id, repository=body.name, private=body.private)
@@ -897,7 +920,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     @router.get("/tasks/{task_id}/evidence")
     async def task_evidence(task_id: str):
         task = task_or_404(task_id)
-        return {"task_id": task.id, "evidence": task.evidence, "artifacts": task.artifacts, "validation": task.validation, "recovery": task.recovery}
+        return {
+            "task_id": task.id,
+            "evidence": task.evidence,
+            "artifacts": task.artifacts,
+            "validation": task.validation,
+            "recovery": task.recovery,
+            "sources": extract_sources(task.evidence),
+        }
 
     @router.get("/tasks/{task_id}/checkpoints")
     async def task_checkpoints(task_id: str):
@@ -905,8 +935,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         return await asyncio.to_thread(store.list_checkpoints, task_id)
 
     @router.delete("/tasks/{task_id}")
-    async def delete_task(task_id: str):
+    async def delete_task(task_id: str, request: Request):
         task = task_or_404(task_id)
+        require_confirmation(request, "build deletion")
         if orchestrator.is_running(task_id) or task.status in {TaskStatus.RUNNING, TaskStatus.QUEUED}:
             raise HTTPException(status_code=409, detail="Stop the running build before deleting it.")
         if not store.delete_task(task_id):

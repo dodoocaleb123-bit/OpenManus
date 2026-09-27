@@ -75,8 +75,9 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 
 | Area | Endpoints |
 | --- | --- |
-| Status | `GET /api/health` (no auth), `GET /api/status` (model, GitHub, auth) |
+| Status | `GET /api/health` (no auth), `GET /api/status` (model, GitHub, auth), `GET /api/metrics` (durable task/verification/recovery/audit summaries) |
 | Projects | `POST/GET /api/projects`, `GET /api/projects/{id}`, `GET /api/projects/{id}/files` |
+| Repository intelligence | `GET /api/projects/{id}/repository-map` (bounded file/language/Python-symbol map) |
 | Uploads | `POST/GET /api/projects/{id}/uploads`, `GET /api/projects/{id}/uploads/{file_id}` |
 | Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent project conversation) |
 | Tasks | `POST /api/tasks` (`{project_id, prompt}`; 409 if one is running in that project), `GET /api/projects/{id}/tasks`, `GET /api/tasks/{id}`, `POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/messages` |
@@ -88,6 +89,12 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 Event types streamed to the UI include `agent.thought`, `agent.tool_call`,
 `agent.tool_result`, `agent.question`, `human.reply`, `coding.validation`,
 `coding.repair`, `github.pull_request` and the `task.*` lifecycle events.
+
+Irreversible UI/API actions require the `X-OpenManus-Confirm: true` header after
+the client has shown the user the exact action: project deletion, build-history
+deletion, and repository publishing. The web UI supplies this header only after
+its confirmation dialog, so this is enforced at the backend rather than only in
+browser JavaScript.
 
 ## Running locally
 
@@ -124,3 +131,7 @@ page are faked; git operations run against local bare repositories.
 - The right context panel includes GitHub, Files, and Evidence tabs. Evidence shows
   plans, validation, artifacts, recovery state, checkpoints, and source URLs from
   recorded task evidence.
+- Repository maps are intentionally bounded and metadata-only; they do not read
+  arbitrary source contents. Full task-level Docker isolation, durable browser
+  profiles, multi-agent roles, app hosting, and RL trajectory integration remain
+  follow-on subsystems rather than being represented as complete here.
