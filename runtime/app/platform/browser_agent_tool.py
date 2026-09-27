@@ -78,35 +78,42 @@ class PlatformBrowserTool(BaseTool):
                 if not url:
                     return self.fail_response("navigate requires `url`")
                 session = await self._session(url)
-                return self.success_response(await session.navigate(url))
+                result = await session.navigate(url)
+                return self.success_response(result, evidence={"action": action, **(result if isinstance(result, dict) else {})})
 
             session = await self._session()
             if action == "status":
-                return self.success_response(await session.status())
+                result = await session.status()
+                return self.success_response(result, evidence={"action": action, **(result if isinstance(result, dict) else {})})
             if action == "back":
-                return self.success_response(await session.back())
+                result = await session.back()
+                return self.success_response(result, evidence={"action": action, **(result if isinstance(result, dict) else {})})
             if action == "click":
-                return self.success_response(await session.click(kwargs["selector"]))
+                result = await session.click(kwargs["selector"])
+                return self.success_response(result, evidence={"action": action, "selector": kwargs["selector"]})
             if action == "type":
-                return self.success_response(
-                    await session.type_text(kwargs["selector"], kwargs.get("text", ""), bool(kwargs.get("submit")))
-                )
+                result = await session.type_text(kwargs["selector"], kwargs.get("text", ""), bool(kwargs.get("submit")))
+                return self.success_response(result, evidence={"action": action, "selector": kwargs["selector"], "submitted": bool(kwargs.get("submit"))})
             if action == "press":
-                return self.success_response(await session.press(kwargs.get("selector") or "body", kwargs["key"]))
+                result = await session.press(kwargs.get("selector") or "body", kwargs["key"])
+                return self.success_response(result, evidence={"action": action, "key": kwargs["key"]})
             if action == "select":
-                return self.success_response(await session.select_option(kwargs["selector"], kwargs.get("value", "")))
+                result = await session.select_option(kwargs["selector"], kwargs.get("value", ""))
+                return self.success_response(result, evidence={"action": action, "selector": kwargs["selector"]})
             if action == "scroll":
-                return self.success_response(await session.scroll(kwargs.get("direction", "down")))
+                result = await session.scroll(kwargs.get("direction", "down"))
+                return self.success_response(result, evidence={"action": action, "direction": kwargs.get("direction", "down")})
             if action == "extract":
                 expression = kwargs.get("expression") or "document.body.innerText"
                 value = await session.evaluate(expression)
                 text = value if isinstance(value, str) else json.dumps(value, default=str)
                 if len(text) > self.max_extract_chars:
                     text = text[: self.max_extract_chars] + f"\n…[truncated, {len(text)} chars total]"
-                return self.success_response(text)
+                return self.success_response(text, evidence={"action": action, "expression": expression, "text_available": bool(text)})
             if action == "wait":
                 await asyncio.sleep(max(0.0, min(float(kwargs.get("seconds", 1)), 30.0)))
-                return self.success_response(await session.status())
+                result = await session.status()
+                return self.success_response(result, evidence={"action": action, "seconds": kwargs.get("seconds", 1), **(result if isinstance(result, dict) else {})})
             if action == "screenshot":
                 data = base64.b64encode(await session.screenshot_jpeg()).decode("ascii")
                 # Refresh the PNG the UI polls so the human sees the same frame.
@@ -114,11 +121,14 @@ class PlatformBrowserTool(BaseTool):
                     await session.screenshot()
                 except Exception:
                     pass
+                status = await session.status()
                 return ToolResult(
-                    output=f"Screenshot captured from {await session.status()}", base64_image=data
+                    output=f"Screenshot captured from {status}", base64_image=data,
+                    evidence={"action": action, **(status if isinstance(status, dict) else {})},
+                    artifacts=[{"type": "screenshot", "mime": "image/jpeg"}],
                 )
             return self.fail_response(f"Unknown browser action: {action}")
         except KeyError as exc:
             return self.fail_response(f"Missing required argument {exc} for action '{action}'")
         except Exception as exc:
-            return self.fail_response(str(exc))
+            return self.fail_response(str(exc), evidence={"action": action}, retryable=True)

@@ -37,6 +37,7 @@ class ToolCallAgent(ReActAgent):
 
     max_steps: int = 30
     max_observe: Optional[Union[int, bool]] = None
+    last_tool_result: Any = Field(default=None, exclude=True)
 
     @staticmethod
     def _text_tool_calls(content: str, allowed: set[str]) -> list[ToolCall]:
@@ -223,6 +224,7 @@ class ToolCallAgent(ReActAgent):
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'...")
             result = await self.available_tools.execute(name=name, tool_input=args)
+            self.last_tool_result = result
 
             # Handle special tools
             await self._handle_special_tool(name=name, result=result)

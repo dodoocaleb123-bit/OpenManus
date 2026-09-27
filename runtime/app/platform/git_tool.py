@@ -79,29 +79,33 @@ class PlatformGitTool(BaseTool):
                     return self.fail_response("connect requires the GitHub owner and repository name")
                 result = await svc.connect(owner, repo, kwargs.get("branch") or None)
                 await self._notify("github.repository", f"Connected {owner}/{repo}", {"repository": f"{owner}/{repo}", "project": result["project"].model_dump(mode="json")})
-                return self.success_response(f"Connected GitHub repository {owner}/{repo} on branch {result['git'].get('branch') or 'default'}")
+                return self.success_response(f"Connected GitHub repository {owner}/{repo} on branch {result['git'].get('branch') or 'default'}", evidence={"action": action, "repository": f"{owner}/{repo}", "branch": result["git"].get("branch")})
             if action == "status":
-                return self.success_response(await git.status())
+                result = await git.status()
+                return self.success_response(result, evidence={"action": action, **(result if isinstance(result, dict) else {})})
             if action == "diff":
                 diff = await git.diff()
                 if len(diff) > 20000:
                     diff = diff[:20000] + f"\n…[diff truncated, {len(diff)} chars total]"
-                return self.success_response(diff or "No changes.")
+                return self.success_response(diff or "No changes.", evidence={"action": action, "changed": bool(diff)})
             if action == "log":
-                return self.success_response(await git.log(15) or "No commits yet.")
+                result = await git.log(15) or "No commits yet."
+                return self.success_response(result, evidence={"action": action, "entries": len(result.splitlines())})
             if action == "init":
                 project = await svc.init()
-                return self.success_response(f"Initialised git repository on branch {project.branch}")
+                return self.success_response(f"Initialised git repository on branch {project.branch}", evidence={"action": action, "branch": project.branch})
             if action == "create_branch":
                 branch = await svc.create_branch(kwargs.get("branch") or "")
-                return self.success_response(f"Created and switched to branch {branch}")
+                return self.success_response(f"Created and switched to branch {branch}", evidence={"action": action, "branch": branch})
             if action == "checkout":
                 branch = await svc.checkout(kwargs.get("branch") or "")
-                return self.success_response(f"Switched to branch {branch}")
+                return self.success_response(f"Switched to branch {branch}", evidence={"action": action, "branch": branch})
             if action == "commit":
-                return self.success_response(await svc.commit(kwargs.get("message") or ""))
+                result = await svc.commit(kwargs.get("message") or "")
+                return self.success_response(result, evidence={"action": action, "message": kwargs.get("message") or ""})
             if action == "push":
-                return self.success_response(await svc.push())
+                result = await svc.push()
+                return self.success_response(result, evidence={"action": action, "pushed": True})
             if action == "create_pull_request":
                 pr = await svc.pull_request(
                     kwargs.get("title") or "",
@@ -110,7 +114,7 @@ class PlatformGitTool(BaseTool):
                     bool(kwargs.get("draft")),
                 )
                 await self._notify("github.pull_request", f"Pull request #{pr['number']}: {pr['url']}", pr)
-                return self.success_response(pr)
+                return self.success_response(pr, evidence={"action": action, "number": pr.get("number"), "url": pr.get("url")})
             if action == "publish_repository":
                 repo = await svc.publish(
                     kwargs.get("repo_name") or "",
@@ -118,7 +122,7 @@ class PlatformGitTool(BaseTool):
                     description=kwargs.get("description") or "",
                 )
                 await self._notify("github.repository", f"Published {repo['repository']}: {repo['url']}", repo)
-                return self.success_response(repo)
+                return self.success_response(repo, evidence={"action": action, "repository": repo.get("repository"), "url": repo.get("url")})
             return self.fail_response(f"Unknown action: {action}")
         except (GitError, GitHubError, ValueError) as exc:
             return self.fail_response(str(exc))

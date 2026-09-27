@@ -194,7 +194,7 @@ case 'task.planned':renderPlan(d.plan);node=el('div','ev sys','Plan created; exe
 case 'agent.step':node=el('div','ev step',ev.message);break;
 case 'agent.thought':if(!d.content)return;node=el('div','ev thought',d.content);break;
 case 'agent.tool_call':node=el('div','ev tool');node.append(el('span','name',d.tool+' '),document.createTextNode(fmtArgs(d.tool,d.arguments)));break;
-case 'agent.tool_result':node=el('div','ev tool '+(d.ok?'':'bad'));node.append(detailsBox(`${d.ok?'✓':'✗'} ${d.tool} output${d.image?' (screenshot sent to the agent)':''}`,d.output||''));if(d.tool==='platform_browser')refreshShotSoon();if(d.tool==='platform_git')refreshProject();break;
+case 'agent.tool_result':node=el('div','ev tool '+(d.ok?'':'bad'));node.append(detailsBox(`${d.ok?'✓':'✗'} ${d.tool} output${d.image?' (screenshot sent to the agent)':''}`,d.output||''));if(d.evidence&&Object.keys(d.evidence).length)node.append(detailsBox('Evidence',JSON.stringify(d.evidence,null,2)));if(d.artifacts?.length)node.append(detailsBox('Artifacts',JSON.stringify(d.artifacts,null,2)));if(d.retryable)node.append(el('div','muted','This failure may be retried.'));if(d.tool==='platform_browser')refreshShotSoon();if(d.tool==='platform_git')refreshProject();break;
 case 'agent.question':node=el('div','ev question','❓ '+ev.message);showQuestion(ev.message);break;
 case 'agent.question_timeout':node=el('div','ev sys',ev.message);showQuestion(null);break;
 case 'human.reply':case 'human.message':node=el('div','ev user',ev.message);if(ev.type==='human.reply')showQuestion(null);break;

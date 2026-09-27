@@ -128,7 +128,10 @@ class WorkspaceBash(Bash):
             await self._session.start()
         if command is None:
             return CLIResult(error="no command provided.")
-        return await self._session.run(command)
+        result = await self._session.run(command)
+        result.evidence = {**getattr(result, "evidence", {}), "tool": self.name, "command": command}
+        result.retryable = bool(getattr(result, "error", None))
+        return result
 
     def close(self) -> None:
         if isinstance(self._session, _WorkspaceBashSession):
@@ -176,11 +179,11 @@ class WorkspacePython(BaseTool):
             except ProcessLookupError:
                 pass
             await proc.wait()
-            return ToolResult(error=f"Execution timed out after {timeout} seconds")
+            return ToolResult(error=f"Execution timed out after {timeout} seconds", evidence={"tool": self.name, "timeout": timeout}, retryable=True)
         text = out.decode(errors="replace")
         if proc.returncode != 0:
-            return ToolResult(error=f"exit code {proc.returncode}\n{text}")
-        return ToolResult(output=text or "(no output)")
+            return ToolResult(error=f"exit code {proc.returncode}\n{text}", evidence={"tool": self.name, "exit_code": proc.returncode}, retryable=False)
+        return ToolResult(output=text or "(no output)", evidence={"tool": self.name, "exit_code": 0})
 
 
 class WorkspaceEditor(StrReplaceEditor):
@@ -390,6 +393,13 @@ class PlatformManus(Manus):
         head = result[:400]
         ok = not (head.startswith("Error") or "\nError: " in head)
         data: dict[str, Any] = {"tool": name, "ok": ok, "output": _clip(result, 4000)}
+        structured = getattr(self, "last_tool_result", None)
+        if structured is not None and hasattr(structured, "error"):
+            ok = not bool(structured.error)
+            data["ok"] = ok
+            data["evidence"] = getattr(structured, "evidence", {}) or {}
+            data["artifacts"] = getattr(structured, "artifacts", []) or []
+            data["retryable"] = bool(getattr(structured, "retryable", False))
         if self._current_base64_image:
             data["image"] = True
         await self._emit("agent.tool_result", f"{name} {'done' if ok else 'failed'}", data)

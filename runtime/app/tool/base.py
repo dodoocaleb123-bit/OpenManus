@@ -42,6 +42,9 @@ class ToolResult(BaseModel):
     error: Optional[str] = Field(default=None)
     base64_image: Optional[str] = Field(default=None)
     system: Optional[str] = Field(default=None)
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[Dict[str, Any] | str] = Field(default_factory=list)
+    retryable: bool = False
 
     class Config:
         arbitrary_types_allowed = True
@@ -64,6 +67,9 @@ class ToolResult(BaseModel):
             error=combine_fields(self.error, other.error),
             base64_image=combine_fields(self.base64_image, other.base64_image, False),
             system=combine_fields(self.system, other.system),
+            evidence={**self.evidence, **other.evidence},
+            artifacts=[*self.artifacts, *other.artifacts],
+            retryable=self.retryable or other.retryable,
         )
 
     def __str__(self):
@@ -144,7 +150,7 @@ class BaseTool(ABC, BaseModel):
     #     """
     #     return self._schemas
 
-    def success_response(self, data: Union[Dict[str, Any], str]) -> ToolResult:
+    def success_response(self, data: Union[Dict[str, Any], str], *, evidence: Dict[str, Any] | None = None, artifacts: list[Dict[str, Any] | str] | None = None) -> ToolResult:
         """Create a successful tool result.
 
         Args:
@@ -158,9 +164,9 @@ class BaseTool(ABC, BaseModel):
         else:
             text = json.dumps(data, indent=2)
         logger.debug(f"Created success response for {self.__class__.__name__}")
-        return ToolResult(output=text)
+        return ToolResult(output=text, evidence=evidence or {}, artifacts=artifacts or [])
 
-    def fail_response(self, msg: str) -> ToolResult:
+    def fail_response(self, msg: str, *, evidence: Dict[str, Any] | None = None, retryable: bool = False) -> ToolResult:
         """Create a failed tool result.
 
         Args:
@@ -170,7 +176,7 @@ class BaseTool(ABC, BaseModel):
             ToolResult with success=False and error message
         """
         logger.debug(f"Tool {self.__class__.__name__} returned failed result: {msg}")
-        return ToolResult(error=msg)
+        return ToolResult(error=msg, evidence=evidence or {}, retryable=retryable)
 
 
 class CLIResult(ToolResult):
