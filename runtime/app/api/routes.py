@@ -240,6 +240,12 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
         return default
 
 
+def _chat_response_budget(*, image: bool) -> int:
+    name = "PLATFORM_IMAGE_MAX_TOKENS" if image else "PLATFORM_CHAT_MAX_TOKENS"
+    default = 6144 if image else 2400
+    return _env_int(name, default, 512)
+
+
 def referenced_images(text: str, uploads: list[UploadedFile], attachment_ids: list[str]) -> list[UploadedFile]:
     """Return only images explicitly attached or referenced by this message."""
     images = [item for item in uploads if (item.content_type or "").startswith("image/") and Path(item.stored_path).is_file()]
@@ -285,6 +291,20 @@ def response_needs_continuation(answer: str, finish_reason: str | None) -> bool:
         ending,
         re.IGNORECASE,
     ))
+
+
+def image_answer_needs_completion(answer: str, finish_reason: str | None, *, math_problem: bool = False) -> bool:
+    """Detect an image answer that stopped before its required conclusion."""
+    if response_needs_continuation(answer, finish_reason):
+        return True
+    if math_problem:
+        lowered = answer.casefold()
+        final_markers = ("final answer", "therefore", "hence", "thus", "in conclusion", r"\boxed")
+        if not any(marker in lowered for marker in final_markers):
+            return True
+        if answer.count("$$") % 2 or answer.count(r"\(") != answer.count(r"\)"):
+            return True
+    return math_response_needs_repair(answer)
 
 
 def math_response_needs_repair(answer: str) -> bool:
@@ -683,6 +703,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             ))
             uploads = await asyncio.to_thread(store.list_uploaded_files, project_id)
             image_uploads = referenced_images(text, uploads, body.attachment_ids)
+            image_math_problem = bool(image_uploads and re.search(
+                r"\b(solve|answer|calculate|find|determine|prove|equation|geometry|length|area|volume|angle|x)\b",
+                text,
+                re.IGNORECASE,
+            ))
             if image_uploads and messages:
                 payloads = []
                 for image in image_uploads:
@@ -713,6 +738,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "is appropriate. "
                     "Before finishing, verify every \\(...\\), \\[...\\], $$...$$, \\frac{{...}}{{...}}, and \\boxed{{...}} "
                     "has matching delimiters and braces; never leave a LaTeX command or equation unfinished. "
+                    "When an attached image contains a geometry or diagram problem, first transcribe every visible "
+                    "label and dimension, solve every requested quantity, and do not stop after describing the figure. "
+                    "If a diagram would clarify the explanation, include a valid Mermaid diagram in a fenced block "
+                    "starting with ```mermaid and ending with ```; keep it supplemental and never substitute it for "
+                    "the mathematical reasoning. "
                     "The assistant also has project tools for implementation tasks: it can inspect and edit files, "
                     "run commands and tests, use the shared browser, and use the connected GitHub integration for "
                     "repository status, branches, commits, pushes, pull requests, and publishing. Do not claim an "
@@ -740,15 +770,19 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     system_msgs=[system],
                     stream=False,
                     temperature=0.3,
-                    max_tokens=2048 if image_uploads else 1200,
+                    max_tokens=_chat_response_budget(image=bool(image_uploads)),
                 )
                 # Long image questions often contain several subproblems. Give
                 # the vision model enough room and retry malformed LaTeX more
                 # than once when a provider cuts off a regenerated answer.
                 for _ in range(4):
-                    needs_continuation = response_needs_continuation(answer, getattr(chat_llm, "last_finish_reason", None))
+                    needs_completion = image_answer_needs_completion(
+                        answer,
+                        getattr(chat_llm, "last_finish_reason", None),
+                        math_problem=image_math_problem,
+                    )
                     needs_math_repair = math_response_needs_repair(answer)
-                    if not needs_continuation and not needs_math_repair:
+                    if not needs_completion:
                         break
                     continuation_messages = copy.deepcopy(original_messages)
                     continuation_messages.append({"role": "assistant", "content": answer})
@@ -758,10 +792,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                             "Review the previous answer for an incomplete ending or malformed LaTeX. "
                             "Return a corrected, complete answer from the beginning so no text is duplicated. "
                             "Preserve the step-by-step explanation, close every math delimiter and brace, "
-                            "and finish with the final answer."
+                            "solve every visible subquestion, and finish with the final answer."
                             if needs_math_repair else
-                            "Continue the previous answer from exactly where it stopped. "
-                            "Do not repeat the completed text; finish the current step and provide the final answer."
+                            "The previous answer is incomplete. Return a complete answer from the beginning, "
+                            "not a continuation fragment. Transcribe the image accurately, solve every visible "
+                            "subquestion, include all algebraic steps, and finish with a clearly labeled final answer."
                         ),
                     })
                     continuation = await chat_llm.ask(
@@ -769,9 +804,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                         system_msgs=[system],
                         stream=False,
                         temperature=0.3,
-                        max_tokens=2048 if image_uploads else 1200,
+                        max_tokens=_chat_response_budget(image=bool(image_uploads)),
                     )
-                    answer = continuation if needs_math_repair else answer + "\n" + continuation
+                    answer = continuation
             except RateLimitError as exc:
                 raise HTTPException(
                     status_code=429,

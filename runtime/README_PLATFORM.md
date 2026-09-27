@@ -107,7 +107,8 @@ python run_platform.py                              # http://127.0.0.1:8000
 
 Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fallback, `PLATFORM_PASSWORD` (Basic auth),
 `PLATFORM_REQUIRE_AUTH=true` (fail closed if a password is missing),
-`PLATFORM_MAX_CONCURRENT_TASKS`, `PLATFORM_MAX_UPLOAD_MB`, and `PLATFORM_DATA_DIR`
+`PLATFORM_MAX_CONCURRENT_TASKS`, `PLATFORM_MAX_UPLOAD_MB`, `PLATFORM_IMAGE_MAX_TOKENS` (default `6144`),
+`PLATFORM_CHAT_MAX_TOKENS` (default `2400`), and `PLATFORM_DATA_DIR`
 (database + workspaces location, default `workspace/`).
 
 ## Tests
@@ -131,6 +132,10 @@ page are faked; git operations run against local bare repositories.
 - The right context panel includes GitHub, Files, and Evidence tabs. Evidence shows
   plans, validation, artifacts, recovery state, checkpoints, and source URLs from
   recorded task evidence.
+- Assistant messages containing fenced `mermaid` blocks are rendered as diagrams
+  in the browser with Mermaid; if the CDN is unavailable, the source remains
+  visible as a code block. Image math questions receive a larger output budget
+  and bounded completion retries so the assistant must finish all visible parts.
 - Repository maps are intentionally bounded and metadata-only; they do not read
   arbitrary source contents. Full task-level Docker isolation, durable browser
   profiles, multi-agent roles, app hosting, and RL trajectory integration remain
