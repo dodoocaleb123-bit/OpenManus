@@ -62,6 +62,7 @@ class PlatformStore:
                     browser_session_id TEXT,
                     coding_iteration INTEGER NOT NULL DEFAULT 0,
                     validation TEXT,
+                    plan TEXT,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
                 CREATE TABLE IF NOT EXISTS events (
@@ -104,6 +105,8 @@ class PlatformStore:
                 db.execute("ALTER TABLE tasks ADD COLUMN coding_iteration INTEGER NOT NULL DEFAULT 0")
             if "validation" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN validation TEXT")
+            if "plan" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN plan TEXT")
 
     @staticmethod
     def _dt(value: str | None) -> datetime | None:
@@ -127,6 +130,7 @@ class PlatformStore:
             browser_session_id=row["browser_session_id"] if "browser_session_id" in row.keys() else None,
             coding_iteration=row["coding_iteration"] if "coding_iteration" in row.keys() else 0,
             validation=json.loads(row["validation"]) if row["validation"] else None,
+            plan=json.loads(row["plan"]) if "plan" in row.keys() and row["plan"] else None,
         )
 
     @staticmethod
@@ -213,8 +217,8 @@ class PlatformStore:
             raise KeyError(f"Unknown project: {project_id}")
         task = Task(project_id=project_id, prompt=prompt)
         with self._connect() as db:
-            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation) VALUES(?,?,?,?,?,?,?,?,?)",
-                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None))
+            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None))
         return task
 
     @staticmethod
@@ -275,10 +279,10 @@ class PlatformStore:
     async def save_task(self, task: Task) -> None:
         async with self._lock:
             with self._connect() as db:
-                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=? WHERE id=?""",
+                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=? WHERE id=?""",
                            (task.status.value, task.started_at.isoformat() if task.started_at else None,
                             task.finished_at.isoformat() if task.finished_at else None, task.result, task.error,
-                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, task.id))
+                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, task.id))
 
     async def emit(self, event: Event) -> None:
         async with self._lock:

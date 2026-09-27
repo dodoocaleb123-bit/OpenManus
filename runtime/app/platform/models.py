@@ -49,6 +49,7 @@ class Task(BaseModel):
     browser_session_id: Optional[str] = None
     coding_iteration: int = 0
     validation: Optional[dict[str, Any]] = None
+    plan: Optional[dict[str, Any]] = None
     # Live-only (not persisted): question the agent is waiting on the user to answer.
     pending_question: Optional[str] = None
 

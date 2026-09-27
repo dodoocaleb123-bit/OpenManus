@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.server import create_app
-from app.api.routes import math_response_needs_repair
+from app.api.routes import math_response_needs_repair, unified_capability_plan
 
 
 class FakeChatLLM:
@@ -36,6 +36,17 @@ class MultiPassRepairingChatLLM(FakeChatLLM):
         if MultiPassRepairingChatLLM.calls < 4:
             return r"### Step 2\n\[ \frac{x^2+5x+6}{"
         return r"### Step 1\n\[ y = \frac{2m + 15}{2} \]\n\n### Step 2\n\[ \frac{x^2+5x+6}{2x+5} \]\n\n\boxed{B}"
+
+
+def test_unified_capability_plan_combines_browser_vision_and_engineering():
+    plan = unified_capability_plan(
+        "Browse this website, inspect the screenshot, update the README, and run tests: https://example.com",
+        has_attachments=True,
+    )
+    assert plan["intent"] == "multi_capability_task"
+    assert set(plan["capabilities"]) == {"vision", "research_browser", "engineering"}
+    assert plan["requires_task"] is True
+    assert len(plan["steps"]) >= 4
 
 
 def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
@@ -105,8 +116,13 @@ def test_project_chat_routes_change_requests_to_the_build_agent(tmp_path, monkey
     assert response.status_code == 200
     payload = response.json()
     assert payload["kind"] == "task"
+    assert payload["plan"]["requires_task"] is True
+    assert "engineering" in payload["plan"]["capabilities"]
     assert payload["task"]["prompt"] == "Please update the project README with setup instructions."
+    assert payload["task"]["plan"]["intent"] == "engineering_task"
     assert started and started[0].id == payload["task"]["id"]
+    events = client.get(f"/api/tasks/{payload['task']['id']}/events/history").json()
+    assert events[0]["type"] == "task.planned"
 
 
 def test_project_chat_acknowledges_browser_research_without_promising_changes(tmp_path, monkeypatch):

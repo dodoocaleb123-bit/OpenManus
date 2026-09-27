@@ -26,7 +26,7 @@ from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.github import GitHubClient, GitHubError
 from app.platform.llm_check import llm_problem, llm_status
-from app.platform.models import TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus, UploadedFile
+from app.platform.models import Event, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus, UploadedFile
 from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning, _is_browser_research_task
 from app.platform.store import PlatformStore
 
@@ -159,6 +159,55 @@ def is_build_request(text: str) -> bool:
         re.search(r"\b(build|create|implement|change|modify|edit|fix|refactor|add|remove|delete|update|write|code|test|commit|push|publish|deploy|branch|pull request|pr|research|browse|website|internet|navigate)\b", value, re.IGNORECASE)
         or re.search(r"\b(connect|clone)\b.*\b(github|repository|repo)\b|\b(github|repository|repo)\b.*\b(connect|clone|pull|push)\b", value, re.IGNORECASE)
     )
+
+
+def unified_capability_plan(text: str, *, has_attachments: bool = False, has_browser_session: bool = False) -> dict:
+    """Return the shared intent contract used by chat, build, browser, and vision flows."""
+    value = text.strip()
+    lowered = value.casefold()
+    capabilities: list[str] = []
+    if has_attachments or re.search(r"\b(image|picture|photo|screenshot|pdf|document|diagram|file)\b", lowered):
+        capabilities.append("vision")
+    if has_browser_session or re.search(r"\b(browse|browser|website|webpage|internet|online|research|navigate|click|type into|search the web)\b|https?://", lowered):
+        capabilities.append("research_browser")
+    if re.search(r"\b(code|coding|file|project|repository|repo|bug|error|function|class|api|docker|html|css|javascript|python|architecture|workspace|test|build|implement|edit|modify|refactor)\b", lowered):
+        capabilities.append("engineering")
+    if re.search(r"\b(github|branch|commit|push|pull request|publish|repository)\b", lowered):
+        capabilities.append("github")
+    if not capabilities:
+        capabilities.append("conversation")
+    is_task = is_build_request(value)
+    if is_task and "engineering" not in capabilities:
+        capabilities.append("engineering")
+    intent = "conversation"
+    if len(capabilities) > 1:
+        intent = "multi_capability_task" if is_task else "multi_capability_question"
+    elif capabilities[0] == "research_browser":
+        intent = "research" if is_task else "research_question"
+    elif capabilities[0] == "engineering":
+        intent = "engineering_task" if is_task else "engineering_question"
+    elif capabilities[0] == "vision":
+        intent = "visual_question"
+    steps = ["Understand the request and gather the required context"]
+    if "research_browser" in capabilities:
+        steps.append("Use the shared browser or web tools and record source evidence")
+    if "vision" in capabilities:
+        steps.append("Inspect only the explicitly attached or referenced files")
+    if "engineering" in capabilities:
+        steps.append("Inspect the workspace, make the requested changes, and run relevant checks")
+    if "github" in capabilities:
+        steps.append("Verify repository state and report the exact GitHub result")
+    if is_task:
+        steps.append("Validate the result, recover from failures when possible, and report evidence")
+    else:
+        steps.append("Compose a clear answer and state limitations or sources")
+    return {
+        "intent": intent,
+        "capabilities": capabilities,
+        "requires_task": is_task,
+        "requires_plan": is_task or len(capabilities) > 1,
+        "steps": steps,
+    }
 
 
 class RepositoryPublish(BaseModel):
@@ -304,7 +353,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         task.pending_question = orchestrator.pending_question(task_id)
         return task
 
-    async def launch_task(project_id: str, prompt: str, browser_session_id: str | None = None):
+    async def launch_task(project_id: str, prompt: str, browser_session_id: str | None = None, plan: dict | None = None):
         """Start the build agent while keeping its messages in the project chat."""
         if not store.get_project(project_id):
             raise HTTPException(status_code=404, detail="Project not found")
@@ -322,7 +371,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 status_code=409,
                 detail="An agent task is already running in this project. Send a message, or cancel it first.",
             )
+        plan = plan or unified_capability_plan(prompt, has_browser_session=bool(browser_session_id))
         task = store.create_task(project_id, prompt.strip())
+        task.plan = plan
         user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", prompt.strip())
         acknowledgement = (
             "I’ll browse the requested page, inspect its contents, and summarize what I find here. I won’t modify the project."
@@ -337,7 +388,8 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         )
         if browser_session_id:
             task.browser_session_id = browser_session_id
-            await store.save_task(task)
+        await store.save_task(task)
+        await store.emit(Event(task_id=task.id, type="task.planned", message="Plan created", data={"plan": plan}))
         orchestrator.start(task)
         return task, user_message, assistant_message
 
@@ -504,14 +556,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
     async def send_chat_message(project_id: str, body: ChatMessageCreate):
         project = project_or_404(project_id)
         text = body.message.strip()
+        plan = unified_capability_plan(text, has_attachments=bool(body.attachment_ids), has_browser_session=bool(body.browser_session_id))
         async with chat_lock(project_id):
-            if is_build_request(text):
+            if plan["requires_task"]:
                 task, user_message, assistant_message = await launch_task(
                     project_id,
                     text,
                     body.browser_session_id,
+                    plan,
                 )
-                return {"kind": "task", "user": user_message, "assistant": assistant_message, "task": task}
+                return {"kind": "task", "plan": plan, "user": user_message, "assistant": assistant_message, "task": task}
             user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
             if re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[!. ]*", text, re.IGNORECASE):
                 assistant_message = await asyncio.to_thread(
@@ -520,7 +574,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "assistant",
                     "Hello! How can I help you today?",
                 )
-                return {"user": user_message, "assistant": assistant_message}
+                return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if re.search(r"\b(are you|is it|what is|what's|how is)\b.*\b(building|working|progress|status|process)\b|\b(in progress|still building|still working)\b", text, re.IGNORECASE):
                 project_tasks = [task for task in store.tasks.values() if task.project_id == project_id]
                 latest = max(project_tasks, key=lambda task: task.created_at, default=None)
@@ -535,7 +589,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 else:
                     status_reply = "No build is currently running for this project."
                 assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", status_reply)
-                return {"user": user_message, "assistant": assistant_message}
+                return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if re.search(r"\b(can you|are you able to|do you)\b.*\b(browse|search|internet|web|website|online)\b|\b(browse|search|internet|web|website|online)\b.*\b(capabilit|access|available)\b", text, re.IGNORECASE):
                 capabilities = (
                     "Yes. OpenManus can browse the internet through its shared browser when you ask it to "
@@ -545,7 +599,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "when requested, use the findings to inspect or update your project. I do not browse automatically for every ordinary question."
                 )
                 assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", capabilities)
-                return {"user": user_message, "assistant": assistant_message}
+                return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if re.search(r"\b(what can you do|what are you capable|your capabilities|can you access github|can you interact with github)\b", text, re.IGNORECASE):
                 github_ready = bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN"))
                 capabilities = (
@@ -563,7 +617,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "When you ask me to make a change, I can carry it out rather than merely describe the steps."
                 )
                 assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", capabilities)
-                return {"user": user_message, "assistant": assistant_message}
+                return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if problem := llm_problem():
                 raise HTTPException(status_code=503, detail=problem)
             history = await asyncio.to_thread(store.list_chat_messages, project_id, 20)
@@ -679,7 +733,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     ) from exc
                 raise HTTPException(status_code=502, detail=f"Chat model request failed: {exc}") from exc
             assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", answer.strip())
-            return {"user": user_message, "assistant": assistant_message}
+            return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
 
     # ------------------------------------------------------------ github
 
