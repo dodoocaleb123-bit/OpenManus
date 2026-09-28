@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from tenacity import RetryError
 
 from app.config import config
-from app.llm import LLM
+from app.llm import LLM, ThinkTagFilter, strip_think_tags
 from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.github import GitHubClient, GitHubError
@@ -370,6 +370,7 @@ async def sse_event_stream(
 def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRouter:
     router = APIRouter(prefix="/api")
     chat_locks: dict[str, asyncio.Lock] = {}
+    active_chat_streams: set[str] = set()
     observability = PlatformObservability(store.root)
 
     def audit(action: str, **data: object) -> None:
@@ -631,12 +632,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
         return await asyncio.to_thread(store.list_chat_messages, project_id, 200)
 
     @router.post("/projects/{project_id}/chat")
-    async def send_chat_message(project_id: str, body: ChatMessageCreate):
+    async def send_chat_message(project_id: str, body: ChatMessageCreate, request: Request):
         request_started = time.perf_counter()
         project = project_or_404(project_id)
         text = body.message.strip()
         plan = unified_capability_plan(text, has_attachments=bool(body.attachment_ids), has_browser_session=bool(body.browser_session_id))
         async with chat_lock(project_id):
+            if project_id in active_chat_streams:
+                raise HTTPException(status_code=409, detail="A reply is already streaming for this project.")
             if plan["requires_task"]:
                 task, user_message, assistant_message = await launch_task(
                     project_id,
@@ -777,6 +780,102 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 # a request. Keep an untouched copy so a bounded continuation
                 # can include the image again if the provider cuts off early.
                 original_messages = copy.deepcopy(messages)
+                if "text/event-stream" in request.headers.get("accept", "").casefold():
+                    active_chat_streams.add(project_id)
+
+                    async def response_stream():
+                        queue: asyncio.Queue = asyncio.Queue()
+                        reason_filter = ThinkTagFilter()
+
+                        async def on_token(token: str):
+                            visible = reason_filter.feed(token)
+                            if visible:
+                                await queue.put(("delta", {"delta": visible}))
+
+                        async def on_reset():
+                            reason_filter.reset()
+                            await queue.put(("reset", {}))
+
+                        async def generate_answer():
+                            try:
+                                answer = await chat_llm.ask(
+                                    copy.deepcopy(original_messages),
+                                    system_msgs=[system],
+                                    stream=True,
+                                    temperature=0.3,
+                                    max_tokens=_chat_response_budget(image=bool(image_uploads)),
+                                    on_token=on_token,
+                                    on_reset=on_reset,
+                                )
+                                tail = reason_filter.finish()
+                                if tail:
+                                    await queue.put(("delta", {"delta": tail}))
+                                answer = strip_think_tags(answer)
+                                for _ in range(4):
+                                    needs_completion = image_answer_needs_completion(
+                                        answer,
+                                        getattr(chat_llm, "last_finish_reason", None),
+                                        math_problem=image_math_problem,
+                                    )
+                                    if not needs_completion:
+                                        break
+                                    continuation_messages = copy.deepcopy(original_messages)
+                                    continuation_messages.append({"role": "assistant", "content": answer})
+                                    continuation_messages.append({
+                                        "role": "user",
+                                        "content": (
+                                            "Review the previous answer for an incomplete ending or malformed LaTeX. "
+                                            "Return a corrected, complete answer from the beginning so no text is duplicated. "
+                                            "Preserve the step-by-step explanation, close every math delimiter and brace, "
+                                            "solve every visible subquestion, and finish with the final answer."
+                                            if math_response_needs_repair(answer) else
+                                            "The previous answer is incomplete. Return a complete answer from the beginning, "
+                                            "not a continuation fragment. Transcribe the image accurately, solve every visible "
+                                            "subquestion, include all algebraic steps, and finish with a clearly labeled final answer."
+                                        ),
+                                    })
+                                    await on_reset()
+                                    continuation = await chat_llm.ask(
+                                        continuation_messages,
+                                        system_msgs=[system],
+                                        stream=True,
+                                        temperature=0.3,
+                                        max_tokens=_chat_response_budget(image=bool(image_uploads)),
+                                        on_token=on_token,
+                                        on_reset=on_reset,
+                                    )
+                                    tail = reason_filter.finish()
+                                    if tail:
+                                        await queue.put(("delta", {"delta": tail}))
+                                    answer = strip_think_tags(continuation)
+                                assistant_message = await save_assistant_reply(answer.strip())
+                                await queue.put(("complete", {"assistant": assistant_message.model_dump(mode="json")}))
+                            except Exception as exc:
+                                logger.exception("Streaming chat response failed")
+                                await queue.put(("error", {"message": "The model could not finish this reply. You can retry your message."}))
+                            finally:
+                                await queue.put(None)
+
+                        producer = asyncio.create_task(generate_answer())
+                        try:
+                            yield ": OpenManus chat stream\n\n"
+                            while True:
+                                item = await queue.get()
+                                if item is None:
+                                    break
+                                event_name, data = item
+                                yield f"event: {event_name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                        finally:
+                            if not producer.done():
+                                producer.cancel()
+                                await asyncio.gather(producer, return_exceptions=True)
+                            active_chat_streams.discard(project_id)
+
+                    return StreamingResponse(
+                        response_stream(),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    )
                 answer = await chat_llm.ask(
                     copy.deepcopy(original_messages),
                     system_msgs=[system],
@@ -831,7 +930,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                         detail="The Gemini API rate limit or quota was reached. Please wait, check your Gemini API quota, or try again later.",
                     ) from exc
                 raise HTTPException(status_code=502, detail=f"Chat model request failed: {exc}") from exc
-            assistant_message = await save_assistant_reply(answer.strip())
+            assistant_message = await save_assistant_reply(strip_think_tags(answer))
             return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
 
     # ------------------------------------------------------------ github

@@ -34,6 +34,8 @@ class ToolCallAgent(ReActAgent):
 
     tool_calls: List[ToolCall] = Field(default_factory=list)
     _current_base64_image: Optional[str] = None
+    stream_token_callback: Any = Field(default=None, exclude=True)
+    stream_reset_callback: Any = Field(default=None, exclude=True)
 
     max_steps: int = 30
     max_observe: Optional[Union[int, bool]] = None
@@ -78,6 +80,12 @@ class ToolCallAgent(ReActAgent):
 
         try:
             # Get response with tool options
+            stream_callbacks = {}
+            if self.stream_token_callback is not None:
+                stream_callbacks = {
+                    "on_token": self.stream_token_callback,
+                    "on_reset": self.stream_reset_callback,
+                }
             response = await self.llm.ask_tool(
                 messages=self.messages,
                 system_msgs=(
@@ -87,6 +95,7 @@ class ToolCallAgent(ReActAgent):
                 ),
                 tools=self.available_tools.to_params(),
                 tool_choice=self.tool_choices,
+                **stream_callbacks,
             )
         except ValueError:
             raise
@@ -113,6 +122,11 @@ class ToolCallAgent(ReActAgent):
             if tool_calls:
                 logger.warning("Recovered %s tool call(s) emitted as local-model text", len(tool_calls))
         self.tool_calls = tool_calls
+        if self.tool_calls and any(call.function.name not in self.special_tool_names for call in self.tool_calls):
+            if self.stream_reset_callback is not None:
+                reset_result = self.stream_reset_callback()
+                if asyncio.iscoroutine(reset_result):
+                    await reset_result
 
         # Log response info
         logger.info(f"✨ {self.name}'s thoughts: {content}")

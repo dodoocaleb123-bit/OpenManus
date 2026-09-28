@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Optional
 from pydantic import Field
 
 from app.agent.manus import Manus
+from app.llm import ThinkTagFilter, strip_think_tags
 from app.logger import logger
 from app.schema import Message, ToolCall
 from app.tool import Terminate, ToolCollection
@@ -303,6 +304,7 @@ class PlatformManus(Manus):
     max_observe: int = 12000
     emit: Any = Field(default=None, exclude=True)
     inbox: Any = Field(default=None, exclude=True)  # asyncio.Queue[str] of user messages
+    response_filter: Any = Field(default=None, exclude=True)
 
     @classmethod
     async def create_for_project(
@@ -339,7 +341,7 @@ class PlatformManus(Manus):
             repository=repository or "none connected",
             branch=branch or "none",
         )
-        return await cls.create(
+        agent = await cls.create(
             available_tools=ToolCollection(*tools),
             system_prompt=system_prompt,
             llm=llm,
@@ -347,6 +349,10 @@ class PlatformManus(Manus):
             emit=emit,
             inbox=inbox,
         )
+        agent.response_filter = ThinkTagFilter()
+        agent.stream_token_callback = agent._stream_token
+        agent.stream_reset_callback = agent._reset_stream
+        return agent
 
     async def _emit(self, type_: str, message: str, data: dict | None = None) -> None:
         if self.emit is None:
@@ -355,6 +361,16 @@ class PlatformManus(Manus):
             await self.emit(type_, message, data or {})
         except Exception as exc:  # events must never break the agent
             logger.warning(f"event emit failed: {exc}")
+
+    async def _stream_token(self, token: str) -> None:
+        visible = self.response_filter.feed(token) if self.response_filter else token
+        if visible:
+            await self._emit("assistant.delta", "OpenManus is responding", {"delta": visible})
+
+    async def _reset_stream(self) -> None:
+        if self.response_filter:
+            self.response_filter.reset()
+        await self._emit("assistant.stream.reset", "Discarded interim text before the next tool", {})
 
     def _drain_inbox(self) -> list[str]:
         messages: list[str] = []
@@ -367,6 +383,8 @@ class PlatformManus(Manus):
                 return messages
 
     async def think(self) -> bool:
+        if self.current_step > 1:
+            await self._reset_stream()
         for text in self._drain_inbox():
             self.memory.add_message(
                 Message.user_message(f"Message from the user (sent while you were working):\n{text}")
@@ -374,8 +392,12 @@ class PlatformManus(Manus):
             await self._emit("agent.user_message", "Delivered your message to the agent", {"message": text})
         await self._emit("agent.step", f"Step {self.current_step}/{self.max_steps}", {"step": self.current_step})
         should_act = await super().think()
+        if self.response_filter:
+            tail = self.response_filter.finish()
+            if tail:
+                await self._emit("assistant.delta", "OpenManus is responding", {"delta": tail})
         last = self.memory.messages[-1] if self.memory.messages else None
-        content = last.content if last is not None and last.role == "assistant" else ""
+        content = strip_think_tags(last.content or "") if last is not None and last.role == "assistant" else ""
         calls = [
             {"name": c.function.name, "arguments": _clip(c.function.arguments or "", 1500)}
             for c in (self.tool_calls or [])
@@ -409,7 +431,9 @@ class PlatformManus(Manus):
         """The agent's last substantive message, used as the task result."""
         for msg in reversed(self.memory.messages):
             if msg.role == "assistant" and msg.content and msg.content.strip():
-                return msg.content.strip()
+                visible = strip_think_tags(msg.content)
+                if visible:
+                    return visible
         return "Task completed."
 
     def close_processes(self) -> None:

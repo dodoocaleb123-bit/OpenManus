@@ -38,6 +38,17 @@ class MultiPassRepairingChatLLM(FakeChatLLM):
         return r"### Step 1\n\[ y = \frac{2m + 15}{2} \]\n\n### Step 2\n\[ \frac{x^2+5x+6}{2x+5} \]\n\n\boxed{B}"
 
 
+class StreamingChatLLM(FakeChatLLM):
+    async def ask(self, messages, system_msgs=None, stream=False, on_token=None, on_reset=None, **kwargs):
+        response = "<think>private scratch text</think>Visible answer"
+        for chunk in ("<think>private", " scratch text</think>", "Visible ", "answer"):
+            if on_token is not None:
+                result = on_token(chunk)
+                if hasattr(result, "__await__"):
+                    await result
+        return response
+
+
 def test_unified_capability_plan_combines_browser_vision_and_engineering():
     plan = unified_capability_plan(
         "Browse this website, inspect the screenshot, update the README, and run tests: https://example.com",
@@ -78,6 +89,28 @@ def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
     # A fresh application instance reads the same SQLite conversation.
     fresh = TestClient(create_app(tmp_path, check_llm=False))
     assert len(fresh.get(f"/api/projects/{project['id']}/chat").json()) == 4
+
+
+def test_project_chat_can_stream_visible_deltas_and_persist_final_reply(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.routes.LLM", StreamingChatLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "stream-chat"}).json()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Tell me something"},
+        headers={"Accept": "text/event-stream"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: delta" in response.text
+    assert "private scratch text" not in response.text
+    history = client.get(f"/api/projects/{project['id']}/chat").json()
+    assert history[-1]["role"] == "assistant"
+    assert history[-1]["content"] == "Visible answer"
+    assert isinstance(history[-1]["response_time_ms"], int)
 
 
 def test_project_chat_rejects_unknown_project(tmp_path, monkeypatch):

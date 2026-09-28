@@ -1,7 +1,8 @@
+import inspect
 import math
 import os
 import re
-from typing import Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import tiktoken
 from openai import (
@@ -15,7 +16,7 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from openai.types.chat import ChatCompletion, ChatCompletionMessage
+from openai.types.chat import ChatCompletion, ChatCompletionMessage, ChatCompletionMessageToolCall
 from tenacity import (
     retry,
     retry_if_exception,
@@ -281,6 +282,74 @@ class TokenCounter:
         return total_tokens
 
 
+async def _invoke_stream_callback(callback: Callable | None, *args) -> None:
+    """Invoke a sync or async callback without allowing UI delivery to break generation."""
+    if callback is None:
+        return
+    try:
+        result = callback(*args)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        logger.warning(f"LLM stream callback failed: {exc}")
+
+
+class ThinkTagFilter:
+    """Incrementally hide DeepSeek-style private ``<think>`` blocks from user-visible streams."""
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self):
+        self.buffer = ""
+        self.in_think = False
+
+    def reset(self) -> None:
+        self.buffer = ""
+        self.in_think = False
+
+    def feed(self, chunk: str) -> str:
+        self.buffer += chunk
+        visible: list[str] = []
+        while self.buffer:
+            lower = self.buffer.lower()
+            if self.in_think:
+                end = lower.find(self.CLOSE)
+                if end >= 0:
+                    self.buffer = self.buffer[end + len(self.CLOSE):]
+                    self.in_think = False
+                    continue
+                keep = len(self.CLOSE) - 1
+                if len(self.buffer) > keep:
+                    self.buffer = self.buffer[-keep:]
+                break
+            start = lower.find(self.OPEN)
+            if start >= 0:
+                visible.append(self.buffer[:start])
+                self.buffer = self.buffer[start + len(self.OPEN):]
+                self.in_think = True
+                continue
+            keep = len(self.OPEN) - 1
+            if len(self.buffer) > keep:
+                visible.append(self.buffer[:-keep])
+                self.buffer = self.buffer[-keep:]
+            break
+        return "".join(visible)
+
+    def finish(self) -> str:
+        if self.in_think:
+            self.reset()
+            return ""
+        remaining = self.buffer
+        self.reset()
+        return remaining
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove complete or unterminated private reasoning blocks from final user-facing text."""
+    return re.sub(r"<think\b[^>]*>[\s\S]*?(?:</think\s*>|$)", "", text or "", flags=re.IGNORECASE).strip()
+
+
 class LLM:
     _instances: Dict[str, "LLM"] = {}
 
@@ -537,6 +606,8 @@ class LLM:
         stream: bool = True,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        on_token: Optional[Callable[[str], Any]] = None,
+        on_reset: Optional[Callable[[], Any]] = None,
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -637,9 +708,14 @@ class LLM:
                 chunk_message = chunk.choices[0].delta.content or ""
                 collected_messages.append(chunk_message)
                 completion_text += chunk_message
-                print(chunk_message, end="", flush=True)
+                if chunk_message:
+                    if on_token is not None:
+                        await _invoke_stream_callback(on_token, chunk_message)
+                    else:
+                        print(chunk_message, end="", flush=True)
 
-            print()  # Newline after streaming
+            if on_token is None:
+                print()  # Newline after streaming
             full_response = "".join(collected_messages).strip()
             if not full_response:
                 raise ValueError("Empty response from streaming LLM")
@@ -660,6 +736,7 @@ class LLM:
             logger.exception(f"Validation error")
             raise
         except OpenAIError as oe:
+            await _invoke_stream_callback(on_reset)
             logger.exception(f"OpenAI API error")
             if isinstance(oe, AuthenticationError):
                 self._rotate_api_key()
@@ -672,6 +749,7 @@ class LLM:
                 logger.error(f"API error: {oe}")
             raise
         except Exception:
+            await _invoke_stream_callback(on_reset)
             logger.exception(f"Unexpected error in ask")
             raise
 
@@ -857,6 +935,8 @@ class LLM:
         tools: Optional[List[dict]] = None,
         tool_choice: TOOL_CHOICE_TYPE = ToolChoice.AUTO,  # type: ignore
         temperature: Optional[float] = None,
+        on_token: Optional[Callable[[str], Any]] = None,
+        on_reset: Optional[Callable[[], Any]] = None,
         **kwargs,
     ) -> ChatCompletionMessage | None:
         """
@@ -939,10 +1019,55 @@ class LLM:
                     )
                 )
 
-            params["stream"] = False  # Always use non-streaming for tool requests
-            response: ChatCompletion = await self.client.chat.completions.create(
-                **params
-            )
+            params["stream"] = on_token is not None
+            response = await self.client.chat.completions.create(**params)
+
+            if on_token is not None:
+                content_parts: list[str] = []
+                partial_calls: dict[int, dict[str, Any]] = {}
+                usage = None
+                async for chunk in response:
+                    usage = getattr(chunk, "usage", None) or usage
+                    choices = getattr(chunk, "choices", None) or []
+                    if not choices:
+                        continue
+                    delta = choices[0].delta
+                    token = getattr(delta, "content", None)
+                    if token:
+                        content_parts.append(token)
+                        await _invoke_stream_callback(on_token, token)
+                    for partial in getattr(delta, "tool_calls", None) or []:
+                        index = int(getattr(partial, "index", 0) or 0)
+                        target = partial_calls.setdefault(index, {
+                            "id": "", "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if getattr(partial, "id", None):
+                            target["id"] = partial.id
+                        function = getattr(partial, "function", None)
+                        if function is not None:
+                            if getattr(function, "name", None):
+                                target["function"]["name"] += function.name
+                            if getattr(function, "arguments", None):
+                                target["function"]["arguments"] += function.arguments
+
+                tool_calls = []
+                for index in sorted(partial_calls):
+                    raw_call = partial_calls[index]
+                    if not raw_call["function"]["name"]:
+                        continue
+                    raw_call["id"] = raw_call["id"] or f"stream-{index}"
+                    tool_calls.append(ChatCompletionMessageToolCall.model_validate(raw_call))
+                content = "".join(content_parts) or None
+                if not content and not tool_calls:
+                    return None
+                if usage is not None and getattr(usage, "prompt_tokens", None) is not None:
+                    self.update_token_count(usage.prompt_tokens, usage.completion_tokens or 0)
+                else:
+                    output_tokens = self.count_tokens(content or "")
+                    output_tokens += sum(self.count_tokens(call.function.name + call.function.arguments) for call in tool_calls)
+                    self.update_token_count(input_tokens, output_tokens)
+                return ChatCompletionMessage(role="assistant", content=content, tool_calls=tool_calls or None)
 
             # Check if response is valid
             if not response.choices or not response.choices[0].message:
@@ -961,9 +1086,11 @@ class LLM:
             # Re-raise token limit errors without logging
             raise
         except ValueError as ve:
+            await _invoke_stream_callback(on_reset)
             logger.error(f"Validation error in ask_tool: {ve}")
             raise
         except OpenAIError as oe:
+            await _invoke_stream_callback(on_reset)
             logger.error(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
                 self._rotate_api_key()
@@ -976,5 +1103,6 @@ class LLM:
                 logger.error(f"API error: {oe}")
             raise
         except Exception as e:
+            await _invoke_stream_callback(on_reset)
             logger.error(f"Unexpected error in ask_tool: {e}")
             raise

@@ -409,6 +409,8 @@ def test_platform_manus_runs_tools_and_emits_live_events(tmp_path, monkeypatch):
 
     async def fake_ask_tool(*args, **kwargs):
         content, calls = script.pop(0)
+        if kwargs.get("on_token") is not None:
+            await kwargs["on_token"](content)
         return SimpleNamespace(
             content=content,
             tool_calls=[ToolCall(id=f"c{i}", function=Function(name=n, arguments=json.dumps(a))) for i, (n, a) in enumerate(calls)],
@@ -436,6 +438,15 @@ def test_platform_manus_runs_tools_and_emits_live_events(tmp_path, monkeypatch):
     assert (tmp_path / "hello.txt").read_text() == "hello\n"
     types = [e[0] for e in events]
     assert types.count("agent.tool_call") == 3 and types.count("agent.tool_result") == 3
+    assert types.count("assistant.delta") >= 3
+    assert "assistant.stream.reset" in types
+    visible_reply = ""
+    for event_type, _, data in events:
+        if event_type == "assistant.delta":
+            visible_reply += data["delta"]
+        elif event_type == "assistant.stream.reset":
+            visible_reply = ""
+    assert visible_reply == "Created hello.txt containing 'hello' and verified it."
     assert "agent.user_message" in types
     bash_result = next(e for e in events if e[0] == "agent.tool_result" and e[2]["tool"] == "bash")
     assert bash_result[2]["ok"] and "hello" in bash_result[2]["output"]
