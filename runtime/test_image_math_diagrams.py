@@ -21,6 +21,12 @@ def test_web_client_contains_mermaid_renderer_and_image_budget_controls():
     assert "mermaid@11" in html
     assert "renderDiagrams" in html
     assert "mermaid-source" in html
+    assert "What can OpenManus do for you?" in html
+    assert "quickPrompt" in html
+    assert "drop-hint" in html
+    assert "tabCode" in html
+    assert "loadRepositoryMap" in html
+    assert "Was this result useful?" in html
     routes = Path("app/api/routes.py").read_text(encoding="utf-8")
     assert "PLATFORM_IMAGE_MAX_TOKENS" in routes
     assert "solve every visible subquestion" in routes
