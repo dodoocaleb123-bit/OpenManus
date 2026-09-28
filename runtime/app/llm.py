@@ -56,7 +56,7 @@ _VISION_MODEL_PATTERNS = (
     r"gpt-4o", r"gpt-4\.1", r"gpt-4\.5", r"gpt-4-turbo", r"gpt-4-vision", r"gpt-5",
     r"chatgpt-4o", r"^o1(?!-mini)", r"^o3(?!-mini)", r"^o4",
     r"^claude-",  # every Claude model since Claude 3 accepts images (sonnet-5, opus-5.5, fable-5-1, ...)
-    r"gemini", r"gemma-3", r"pixtral", r"llava", r"qwen.*vl", r"grok-.*vision", r"grok-4",
+    r"gemini", r"gemma-?3", r"pixtral", r"llava", r"qwen.*vl", r"grok-.*vision", r"grok-4",
     r"llama-3\.2-.*vision", r"llama-4", r"mistral-(medium|small)-3", r"glm-4.*v", r"kimi-k2",
     r"nova-(lite|pro|premier)",
 )

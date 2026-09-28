@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.llm import _is_retryable
+from app.llm import _is_retryable, model_supports_images
 from app.llm import LLM
 from deploy import entrypoint
 from openai import RateLimitError
@@ -75,3 +75,11 @@ def test_entrypoint_renders_named_provider_pools(monkeypatch):
     assert '[llm.vision]' in rendered and '"vision-one", "vision-two"' in rendered
     assert '[llm.heavy_coding]' in rendered and '"coding-one", "coding-two"' in rendered
     assert '[llm.fallback]' in rendered and '"ollama", "ollama-two"' in rendered
+
+
+def test_ollama_gemma3_models_are_detected_as_vision_capable(monkeypatch):
+    monkeypatch.delenv("LLM_SUPPORTS_IMAGES", raising=False)
+    assert model_supports_images("gemma3:4b") is True
+    assert model_supports_images("gemma3:12b") is True
+    assert model_supports_images("gemma-3:4b") is True
+    assert model_supports_images("qwen2.5-coder:7b") is False
