@@ -202,6 +202,20 @@ html.light-mode .workspace-title h3{color:#202634}
 .cancel-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:19px}
 .cancel-dialog-actions .danger{background:#49232a;border-color:#71333e;color:#ffdbe0}
 
+
+.reply-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:10px;padding-top:7px;border-top:1px solid var(--line)}
+.reply-copy{border:1px solid transparent;background:transparent;color:var(--muted);font-size:11px;padding:4px 8px;border-radius:7px}
+.reply-copy:hover{border-color:var(--line);background:var(--panel2);color:var(--text)}
+.reply-copy.copied{color:var(--ok);border-color:#23502f}
+.processing-live{border-color:#40577b;box-shadow:0 0 0 1px #93c5fd16,0 8px 24px #0002}
+.processing-live .processing-toggle{color:#dbeafe}
+.processing-live .processing-toggle:before{content:"";display:inline-block;width:7px;height:7px;margin-right:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:pulse 1.4s infinite}
+html.light-mode .reply-actions{border-color:#e0e4eb}
+html.light-mode .reply-copy{color:#657184}
+html.light-mode .reply-copy:hover{background:#edf0f6;color:#202634}
+html.light-mode .processing-live{border-color:#99a9cc;background:#fff}
+html.light-mode .processing-live .processing-toggle{color:#343f55}
+
 </style>
 </head>
 <body>
@@ -355,16 +369,42 @@ async function appendTaskHistory(id){const evs=await api(`/api/tasks/${id}/event
 function showProjectWelcome(){const box=el('div','feed-empty');const body=el('div');body.append(el('div','welcome-kicker','Project workspace'));body.append(el('strong','',`Ready to work on ${selected?.name||'this project'}`));body.append(el('span','', 'Ask a question or choose a starting point. Open the workspace panel whenever you want to inspect files, browser activity, GitHub, or evidence.'));const actions=el('div','quick-actions');[['Inspect repository','Map the project structure and explain its architecture'],['Build a website','Build and verify a polished web application in this project'],['Run tests','Run the relevant project tests and summarize the results'],['Review GitHub','Inspect the connected repository and current branch']].forEach(([title,prompt])=>{const b=el('button','quick-action');b.append(el('strong','',title),el('span','',prompt));b.onclick=()=>quickPrompt(prompt);actions.append(b)});body.append(actions);box.append(body);$('feed').append(box)}
 async function loadChat(){if(!selected)return;try{const messages=await api(`/api/projects/${selected.id}/chat`);$('feed').innerHTML='';resetProcessing();if(!messages.length){showProjectWelcome();return}messages.forEach(renderChatMessage);$('feed').scrollTop=$('feed').scrollHeight}catch(e){$('feed').innerHTML='';resetProcessing();$('feed').append(el('div','ev bad',e.message))}}
 function resetProcessing(){processingPanel=null;processingBody=null;processingSteps=new Map();processingActiveStep=0;processingOpen=false}
-function ensureProcessing(){if(processingPanel)return processingPanel;processingPanel=el('div','processing');const toggle=el('button','processing-toggle','Processing · 0 steps');processingBody=el('div','processing-body');processingBody.hidden=true;toggle.onclick=()=>{processingOpen=!processingOpen;processingBody.hidden=!processingOpen};processingPanel._toggle=toggle;processingPanel._count=0;processingPanel._status='running';processingPanel.append(toggle,processingBody);$('feed').append(processingPanel);return processingPanel}
-function updateProcessingHeader(){if(!processingPanel)return;const status=processingPanel._status==='done'?' · Completed':processingPanel._status==='failed'?' · Failed':processingPanel._status==='cancelled'?' · Cancelled':'';processingPanel._toggle.textContent=`Processing · ${processingPanel._count} steps${status}`}
-function ensureProcessingStep(number,label){ensureProcessing();if(!processingSteps.has(number)){const row=el('div','processing-step');const button=el('button','processing-step-toggle',`Step ${number}${label?` — ${label}`:''}`);const detail=el('div','processing-detail');detail.hidden=true;button.onclick=()=>{detail.hidden=!detail.hidden};row.append(button,detail);processingBody.append(row);processingSteps.set(number,{row,button,detail});processingPanel._count=processingSteps.size;updateProcessingHeader()}return processingSteps.get(number)}
+function ensureProcessing(){
+ if(processingPanel)return processingPanel;
+ processingPanel=el('div','processing');const toggle=el('button','processing-toggle','Task activity · 0 steps');
+ processingBody=el('div','processing-body');
+ const live=!!currentTask&&['running','queued'].includes(currentTask.status);
+ processingOpen=live;processingBody.hidden=!processingOpen;
+ toggle.type='button';toggle.setAttribute('aria-expanded',String(processingOpen));toggle.onclick=()=>setProcessingOpen(!processingOpen);
+ processingPanel._toggle=toggle;processingPanel._count=0;processingPanel._status='running';processingPanel.append(toggle,processingBody);
+ processingPanel.classList.toggle('processing-live',live&&processingOpen);$('feed').append(processingPanel);updateProcessingHeader();return processingPanel
+}
+function setProcessingOpen(open){if(!processingPanel||!processingBody)return;processingOpen=!!open;processingBody.hidden=!processingOpen;processingPanel._toggle.setAttribute('aria-expanded',String(processingOpen));const live=!!currentTask&&['running','queued'].includes(currentTask.status)&&processingPanel._status==='running';processingPanel.classList.toggle('processing-live',processingOpen&&live)}
+function updateProcessingHeader(){if(!processingPanel)return;const state=processingPanel._status==='done'?' · Completed':processingPanel._status==='failed'?' · Failed':processingPanel._status==='cancelled'?' · Cancelled':currentTask&&['running','queued'].includes(currentTask.status)?' · Working now':'';processingPanel._toggle.textContent=`Task activity · ${processingPanel._count} steps${state}`;processingPanel._toggle.setAttribute('aria-expanded',String(processingOpen));processingPanel.classList.toggle('processing-live',processingOpen&&processingPanel._status==='running'&&currentTask&&['running','queued'].includes(currentTask.status))}
+function ensureProcessingStep(number,label){ensureProcessing();if(!processingSteps.has(number)){const row=el('div','processing-step');const button=el('button','processing-step-toggle',`Step ${number}${label?` — ${label}`:''}`);const detail=el('div','processing-detail');detail.hidden=false;button.type='button';button.setAttribute('aria-expanded','true');button.onclick=()=>{detail.hidden=!detail.hidden;button.setAttribute('aria-expanded',String(!detail.hidden))};row.append(button,detail);processingBody.append(row);processingSteps.set(number,{row,button,detail});processingPanel._count=processingSteps.size;updateProcessingHeader()}return processingSteps.get(number)}
 function currentProcessingStep(){return processingActiveStep||processingSteps.size||1}
 function addProcessingEvent(ev,node){const match=String(ev.message||'').match(/Step\s+(\d+)/i);if(match){processingActiveStep=Number(match[1]);ensureProcessingStep(processingActiveStep)}const number=match?Number(match[1]):currentProcessingStep();const step=ensureProcessingStep(number);step.detail.append(node)}
 function escapeHtml(text){return String(text??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}
 	function renderMarkdown(text){let html=escapeHtml(text);html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>');html=html.replace(/```mermaid\s*\n([\s\S]*?)```/gi,'<pre class=\"mermaid-source\">$1</pre>');html=html.replace(/```([\s\S]*?)```/g,'<pre>$1</pre>');html=html.replace(/`([^`]+)`/g,'<code>$1</code>');html=html.replace(/^###\s+(.+)$/gm,'<h3>$1</h3>');html=html.replace(/^##\s+(.+)$/gm,'<h3>$1</h3>');html=html.replace(/^---+\s*$/gm,'<hr>');html=html.replace(/^\s*[-*]\s+(.+)$/gm,'<li>$1</li>');html=html.replace(/(<li>.*<\/li>)(?:\n|$)/g,'<ul>$1</ul>');html=html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');html=html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g,'<em>$1</em>');return html}
 function typesetMath(node,attempt=0){if(!node||!node.textContent||!/[\\$][\\(\\[\\$]/.test(node.textContent))return;if(window.MathJax&&typeof window.MathJax.typesetPromise==='function'){window.MathJax.typesetPromise([node]).catch(()=>{});return}if(attempt<20)setTimeout(()=>typesetMath(node,attempt+1),250)}
 function renderDiagrams(node,attempt=0){const sources=[...node.querySelectorAll('.mermaid-source')];if(!sources.length)return;if(!window.mermaid){if(attempt<20)setTimeout(()=>renderDiagrams(node,attempt+1),250);return}sources.forEach((source,index)=>{const diagram=el('div','mermaid');diagram.textContent=source.textContent.trim();source.replaceWith(diagram)});window.mermaid.run({nodes:[...node.querySelectorAll('.mermaid')]}).catch(()=>{})}
-function renderChatMessage(message,before=null){const node=el('div','ev '+(message.role==='user'?'user':'assistant'));if(message.role==='assistant')node.innerHTML=renderMarkdown(message.content);else node.textContent=message.content;const feed=$('feed');if(before&&before instanceof Node&&before.parentNode===feed)feed.insertBefore(node,before);else feed.append(node);if(message.role==='assistant'){typesetMath(node);renderDiagrams(node)}}
+function renderChatMessage(message,before=null){
+ const assistant=message.role==='assistant';const content=String(message.content??'');const node=el('div','ev '+(assistant?'assistant':'user'));
+ if(assistant){node.innerHTML=renderMarkdown(content);const actions=el('div','reply-actions');const copy=el('button','reply-copy','Copy');copy.type='button';copy.title='Copy this assistant reply';copy.setAttribute('aria-label','Copy assistant reply');copy.setAttribute('aria-live','polite');copy.onclick=()=>copyReply(content,copy);actions.append(copy);node.append(actions)}else node.textContent=content;
+ const feed=$('feed');if(before&&before instanceof Node&&before.parentNode===feed)feed.insertBefore(node,before);else feed.append(node);
+ if(assistant){typesetMath(node);renderDiagrams(node)}return node
+}
+async function copyReply(text,button){
+ const original=button.textContent;button.disabled=true;
+ try{
+  let copied=false;
+  if(navigator.clipboard&&window.isSecureContext){try{await navigator.clipboard.writeText(String(text));copied=true}catch(e){}}
+  if(!copied){const area=el('textarea');area.value=String(text);area.setAttribute('readonly','');area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.focus();area.select();try{copied=document.execCommand('copy')}finally{area.remove()}}
+  if(!copied)throw Error('Clipboard access is unavailable');
+  button.textContent='Copied';button.classList.add('copied');button.setAttribute('aria-label','Reply copied');
+ }catch(e){button.textContent='Copy failed';button.title='Clipboard access was blocked by the browser'}
+ setTimeout(()=>{button.textContent=original;button.disabled=false;button.classList.remove('copied');button.setAttribute('aria-label','Copy assistant reply');button.title='Copy this assistant reply'},1800)
+}
 function renderPlan(plan){if(!plan)return;const box=el('div','ev plan');const title=el('strong','',`Plan · ${plan.intent||'unified assistant'}`);box.append(title);if(plan.capabilities?.length)box.append(el('div','muted','Capabilities: '+plan.capabilities.join(' · ')));(plan.steps||[]).forEach((step,i)=>box.append(el('div','plan-step',`${i+1}. ${step}`)));$('feed').append(box)}
 async function showTask(taskOrId,historical=true){
 if(!selected)return;
@@ -382,7 +422,7 @@ try{
  updateTaskHeader(currentTask,historical);
  if(stillLive){if(!live)setRunning(true,currentTask.started_at);showQuestion(currentTask.pending_question);renderChoices(currentTask.pending_question);openStream(currentTask.id)}
  else{closeStream();showQuestion(null);if(agentStartedAt){clearInterval(agentTimerHandle);agentTimerHandle=null;agentStartedAt=0;$('agentStatus').style.display='none'}}
- if(historical&&processingPanel&&processingPanel._toggle)processingPanel._toggle.click();
+ if(historical&&processingPanel)setProcessingOpen(true);
  await refreshHistory();if($('paneEvidence').style.display!=='none')loadEvidence();if($('paneCheckpoints').style.display!=='none')loadCheckpoints();$('feed').scrollTop=$('feed').scrollHeight;
 }catch(e){$('feed').append(el('div','ev bad',e.message))}
 }
@@ -404,7 +444,7 @@ if(currentTask&&['running','queued'].includes(currentTask.status)){
  renderChatMessage({role:'user',content:text});$('prompt').value='';showQuestion(null);clearChoices();try{await api(`/api/tasks/${currentTask.id}/messages`,{method:'POST',body:{message:text}})}catch(e){$('feed').append(el('div','ev bad',e.message))}return
 }
 const button=$('runBtn');button.disabled=true;const attachmentIds=[...new Set(pendingUploadIds)].slice(-4);pendingUploadIds.splice(0);renderAttachments();renderChatMessage({role:'user',content:text+(attachmentIds.length?'\n📎 attachment(s) included':'')});$('prompt').value='';historyView=false;selectedTaskId=null;updateTaskHeader(null,false);
-try{const result=await api(`/api/projects/${selected.id}/chat`,{method:'POST',body:{message:text,attachment_ids:attachmentIds,browser_session_id:browserSession?.id||null}});if(result.plan?.requires_plan)renderPlan(result.plan);renderChatMessage(result.assistant);if(result.kind==='task'){currentTask=result.task;selectedTaskId=result.task.id;updateTaskHeader(result.task,false);lastEventId=null;setRunning(true,result.task.started_at);openStream(result.task.id);refreshHistory()}else{$('feed').scrollTop=$('feed').scrollHeight}}
+try{const result=await api(`/api/projects/${selected.id}/chat`,{method:'POST',body:{message:text,attachment_ids:attachmentIds,browser_session_id:browserSession?.id||null}});if(result.plan?.requires_plan)renderPlan(result.plan);renderChatMessage(result.assistant);if(result.kind==='task'){resetProcessing();currentTask=result.task;selectedTaskId=result.task.id;updateTaskHeader(result.task,false);lastEventId=null;setRunning(true,result.task.started_at);openStream(result.task.id);refreshHistory()}else{$('feed').scrollTop=$('feed').scrollHeight}}
 catch(e){$('feed').append(el('div','ev bad',e.message))}finally{button.disabled=false}}
 async function cancelTask(){requestCancelTask()}
 async function resumeTask(id){try{await api(`/api/tasks/${id}/resume`,{method:'POST'});await showTask(id,false);refreshHistory()}catch(e){alert(e.message)}}
@@ -417,7 +457,28 @@ function showQuestion(q){$('questionBox').style.display=q?'block':'none';if(!q)c
 function fmtArgs(tool,raw){let a;try{a=JSON.parse(raw||'{}')}catch(e){return raw||''}
 if(tool==='bash')return '$ '+(a.command??'');if(tool==='str_replace_editor')return `${a.command} ${a.path||''}`;if(tool==='platform_browser')return `${a.action}${a.url?' '+a.url:''}${a.selector?' '+a.selector:''}${a.text?' "'+a.text+'"':''}`;if(tool==='platform_git')return `${a.action}${a.branch?' '+a.branch:''}${a.message?' "'+a.message+'"':''}${a.title?' "'+a.title+'"':''}${a.repo_name?' '+a.repo_name:''}`;if(tool==='python_execute')return (a.code||'').slice(0,400);if(tool==='web_search')return a.query||'';return JSON.stringify(a).slice(0,400)}
 function detailsBox(label,text){const d=el('details');d.append(el('summary','',label),el('pre','',text));return d}
-function render(ev){lastEventId=ev.id;const f=$('feed');const d=ev.data||{};if(ev.type==='agent.tool_call')appendTerminal(fmtArgs(d.tool,d.arguments));if(ev.type==='agent.tool_result')appendTerminal(d.output||'');updateTaskProgress(ev);if($('agentStatusDetail'))$('agentStatusDetail').textContent=ev.message||'Working on your request…';let node;
+function activityLabel(ev){
+ const d=ev?.data||{};switch(ev?.type){
+  case 'task.planned':return 'Plan ready — starting the task';
+  case 'agent.step':return ev.message||'Working through the next step';
+  case 'agent.thought':return 'Thinking through the next step…';
+  case 'agent.tool_call':{const names={web_search:'Searching the web',platform_browser:'Using the shared browser',bash:'Running a project command',str_replace_editor:'Working with project files',python_execute:'Running Python analysis',platform_git:'Working with GitHub'};const label=names[d.tool]||`Using ${d.tool||'a tool'}`;const detail=fmtArgs(d.tool,d.arguments||'').replace(/\s+/g,' ').trim();return detail?`${label}: ${detail.slice(0,105)}`:label}
+  case 'agent.tool_result':return `${d.ok?'Finished':'Needs attention'} · ${d.tool||'tool'}`;
+  case 'agent.question':return 'Waiting for your answer';
+  case 'human.reply':case 'human.message':return 'Your reply was received; continuing the task';
+  case 'coding.implementation':return 'First implementation pass complete';
+  case 'coding.validating':return 'Running tests and checking the changes…';
+  case 'coding.validation':return ev.message||'Validation finished';
+  case 'coding.repair':return 'Repairing an issue found during validation';
+  case 'browser.started':case 'browser.attached':return 'Working in the shared browser';
+  case 'task.succeeded':return 'Task completed';
+  case 'task.failed':return 'Task needs attention';
+  case 'task.cancelled':return 'Task stopped';
+  default:return ev?.message||'Working on your request…';
+ }
+}
+function updateActivityStatus(ev){const detail=$('agentStatusDetail');if(detail){detail.textContent=activityLabel(ev);detail.setAttribute('aria-live','polite')}}
+function render(ev){lastEventId=ev.id;const f=$('feed');const stick=f.scrollHeight-f.scrollTop-f.clientHeight<120;const d=ev.data||{};if(ev.type==='agent.tool_call')appendTerminal(fmtArgs(d.tool,d.arguments));if(ev.type==='agent.tool_result')appendTerminal(d.output||'');updateTaskProgress(ev);updateActivityStatus(ev);let node;
 switch(ev.type){
 	case 'task.planned':renderPlan(d.plan);node=el('div','ev sys','Plan created; execution is starting.');break;
 	case 'reasoning.started':case 'reasoning.review_started':node=el('div','ev sys','🧠 '+ev.message+' ('+(d.model||'reasoning model')+')');break;
@@ -425,7 +486,7 @@ switch(ev.type){
 	case 'reasoning.review':node=el('div','ev thought');node.append(el('strong','', '🧠 Reasoning review'));node.append(detailsBox('Review',JSON.stringify(d.review||{},null,2)));break;
 	case 'reasoning.skipped':case 'reasoning.review_skipped':node=el('div','ev sys','ℹ️ '+ev.message);break;
 	case 'agent.step':node=el('div','ev step',ev.message);break;
-case 'agent.thought':if(!d.content)return;node=el('div','ev thought',d.content);break;
+case 'agent.thought':node=el('div','ev thought','Thinking through the next step…');break;
 case 'agent.tool_call':node=el('div','ev tool');node.append(el('span','name',d.tool+' '),document.createTextNode(fmtArgs(d.tool,d.arguments)));break;
 case 'agent.tool_result':node=el('div','ev tool '+(d.ok?'':'bad'));node.append(detailsBox(`${d.ok?'✓':'✗'} ${d.tool} output${d.image?' (screenshot sent to the agent)':''}`,d.output||''));if(d.evidence&&Object.keys(d.evidence).length)node.append(detailsBox('Evidence',JSON.stringify(d.evidence,null,2)));if(d.artifacts?.length)node.append(detailsBox('Artifacts',JSON.stringify(d.artifacts,null,2)));if(d.retryable)node.append(el('div','muted','This failure may be retried.'));if(d.tool==='platform_browser')refreshShotSoon();if(d.tool==='platform_git')refreshProject();break;
 case 'agent.question':node=el('div','ev question','❓ '+ev.message);showQuestion(ev.message);renderChoices(ev.message);break;
@@ -441,7 +502,7 @@ case 'task.succeeded':node=el('div','ev good','🎉 Done. '+(d.result||ev.messag
 case 'task.failed':node=el('div','ev bad','⚠ '+ev.message+(d.result?'\n\nAgent summary: '+d.result:''));updateTaskProgress(ev);break;
 case 'task.cancelled':node=el('div','ev bad','⏹ Task cancelled');updateTaskProgress(ev);break;
 default:node=el('div','ev sys',ev.message)}
-if(['task.planned','task.recovery','task.retry_scheduled','reasoning.started','reasoning.plan','reasoning.skipped','reasoning.review_started','reasoning.review','reasoning.review_skipped','agent.step','agent.thought','agent.tool_call','agent.tool_result','agent.question','agent.question_timeout','human.reply','human.message','coding.implementation','coding.validating','coding.validation','coding.repair','browser.started','browser.attached','github.pull_request','github.repository','task.succeeded','task.failed','task.cancelled'].includes(ev.type)){if(ev.type==='task.succeeded')processingPanel&&(processingPanel._status='done');if(ev.type==='task.failed')processingPanel&&(processingPanel._status='failed');if(ev.type==='task.cancelled')processingPanel&&(processingPanel._status='cancelled');addProcessingEvent(ev,node);updateProcessingHeader();return}const stick=f.scrollHeight-f.scrollTop-f.clientHeight<120;f.append(node);if(stick)f.scrollTop=f.scrollHeight}
+if(['task.planned','task.recovery','task.retry_scheduled','reasoning.started','reasoning.plan','reasoning.skipped','reasoning.review_started','reasoning.review','reasoning.review_skipped','agent.step','agent.thought','agent.tool_call','agent.tool_result','agent.question','agent.question_timeout','human.reply','human.message','coding.implementation','coding.validating','coding.validation','coding.repair','browser.started','browser.attached','github.pull_request','github.repository','task.succeeded','task.failed','task.cancelled'].includes(ev.type)){if(ev.type==='task.succeeded')processingPanel&&(processingPanel._status='done');if(ev.type==='task.failed')processingPanel&&(processingPanel._status='failed');if(ev.type==='task.cancelled')processingPanel&&(processingPanel._status='cancelled');addProcessingEvent(ev,node);updateProcessingHeader();if(stick)f.scrollTop=f.scrollHeight;return}f.append(node);if(stick)f.scrollTop=f.scrollHeight}
 
 /* ---------------- browser ---------------- */
 async function attachProjectBrowser(){browserSession=null;updateBrowser();if(!selected)return;try{browserSession=await api(`/api/browser/projects/${selected.id}/session`);updateBrowser();startShots()}catch(e){stopShots()}}
