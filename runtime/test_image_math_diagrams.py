@@ -36,6 +36,7 @@ def test_web_client_contains_mermaid_renderer_and_image_budget_controls():
     assert "uploadedPreviews" in html
     assert "grid-template-columns:220px minmax(420px,1fr) 340px" in html
     assert "@media(max-width:860px)" in html
+    assert "grid-template-columns:190px minmax(360px,1fr) 300px" in html
     routes = Path("app/api/routes.py").read_text(encoding="utf-8")
     assert "PLATFORM_IMAGE_MAX_TOKENS" in routes
     assert "solve every visible subquestion" in routes
