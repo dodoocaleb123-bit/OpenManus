@@ -40,6 +40,10 @@ SSE_HEARTBEAT_INTERVAL = 20.0
 SSE_MAX_LIFETIME = 840.0
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
 def _rate_limit_exception(exc: BaseException) -> bool:
     message = str(exc).lower()
     if "rate limit" in message or "quota" in message or "too many requests" in message:
@@ -406,6 +410,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
 
     async def launch_task(project_id: str, prompt: str, browser_session_id: str | None = None, plan: dict | None = None):
         """Start the build agent while keeping its messages in the project chat."""
+        request_started = time.perf_counter()
         if not store.get_project(project_id):
             raise HTTPException(status_code=404, detail="Project not found")
         if browser_session_id:
@@ -441,6 +446,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             project_id,
             "assistant",
             acknowledgement,
+            response_time_ms=_elapsed_ms(request_started),
         )
         if browser_session_id:
             task.browser_session_id = browser_session_id
@@ -626,6 +632,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
 
     @router.post("/projects/{project_id}/chat")
     async def send_chat_message(project_id: str, body: ChatMessageCreate):
+        request_started = time.perf_counter()
         project = project_or_404(project_id)
         text = body.message.strip()
         plan = unified_capability_plan(text, has_attachments=bool(body.attachment_ids), has_browser_session=bool(body.browser_session_id))
@@ -639,13 +646,18 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                 )
                 return {"kind": "task", "plan": plan, "user": user_message, "assistant": assistant_message, "task": task}
             user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
-            if re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[!. ]*", text, re.IGNORECASE):
-                assistant_message = await asyncio.to_thread(
+
+            async def save_assistant_reply(content: str):
+                return await asyncio.to_thread(
                     store.add_chat_message,
                     project_id,
                     "assistant",
-                    "Hello! How can I help you today?",
+                    content,
+                    response_time_ms=_elapsed_ms(request_started),
                 )
+
+            if re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[!. ]*", text, re.IGNORECASE):
+                assistant_message = await save_assistant_reply("Hello! How can I help you today?")
                 return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if re.search(r"\b(are you|is it|what is|what's|how is)\b.*\b(building|working|progress|status|process)\b|\b(in progress|still building|still working)\b", text, re.IGNORECASE):
                 project_tasks = [task for task in store.tasks.values() if task.project_id == project_id]
@@ -660,7 +672,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     status_reply = "No. The latest build was cancelled and is not running."
                 else:
                     status_reply = "No build is currently running for this project."
-                assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", status_reply)
+                assistant_message = await save_assistant_reply(status_reply)
                 return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if re.search(r"\b(can you|are you able to|do you)\b.*\b(browse|search|internet|web|website|online)\b|\b(browse|search|internet|web|website|online)\b.*\b(capabilit|access|available)\b", text, re.IGNORECASE):
                 capabilities = (
@@ -670,7 +682,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     "Browsing is performed by the build agent in this same conversation, so I can report what I found and, "
                     "when requested, use the findings to inspect or update your project. I do not browse automatically for every ordinary question."
                 )
-                assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", capabilities)
+                assistant_message = await save_assistant_reply(capabilities)
                 return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if re.search(r"\b(what can you do|what are you capable|your capabilities|can you access github|can you interact with github)\b", text, re.IGNORECASE):
                 github_ready = bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_CLASSIC_TOKEN"))
@@ -688,7 +700,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                     f"This project is {'connected to ' + project.repository if project.repository else 'not yet connected to a repository'}. "
                     "When you ask me to make a change, I can carry it out rather than merely describe the steps."
                 )
-                assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", capabilities)
+                assistant_message = await save_assistant_reply(capabilities)
                 return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
             if problem := llm_problem():
                 raise HTTPException(status_code=503, detail=problem)
@@ -819,7 +831,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
                         detail="The Gemini API rate limit or quota was reached. Please wait, check your Gemini API quota, or try again later.",
                     ) from exc
                 raise HTTPException(status_code=502, detail=f"Chat model request failed: {exc}") from exc
-            assistant_message = await asyncio.to_thread(store.add_chat_message, project_id, "assistant", answer.strip())
+            assistant_message = await save_assistant_reply(answer.strip())
             return {"kind": "chat", "plan": plan, "user": user_message, "assistant": assistant_message}
 
     # ------------------------------------------------------------ github
@@ -990,13 +1002,20 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
 
     @router.post("/tasks/{task_id}/cancel")
     async def cancel_task(task_id: str, body: TaskMessage | None = None):
+        request_started = time.perf_counter()
         task = task_or_404(task_id)
         if body and body.message.strip():
             await asyncio.to_thread(store.add_chat_message, task.project_id, "user", body.message.strip())
         if not await orchestrator.cancel(task_id):
             raise HTTPException(status_code=409, detail="Task is not running")
         if body and body.message.strip():
-            await asyncio.to_thread(store.add_chat_message, task.project_id, "assistant", "I stopped the running build. Its conversation and activity remain available.")
+            await asyncio.to_thread(
+                store.add_chat_message,
+                task.project_id,
+                "assistant",
+                "I stopped the running build. Its conversation and activity remain available.",
+                response_time_ms=_elapsed_ms(request_started),
+            )
         return task_or_404(task_id)
 
     @router.post("/tasks/{task_id}/messages")

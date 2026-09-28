@@ -58,6 +58,46 @@ def test_persistence_and_resume(tmp_path: Path):
     assert len(asyncio.run(store2.list_events(t.id))) == 1
 
 
+def test_chat_response_time_migrates_and_persists(tmp_path: Path):
+    import sqlite3
+    from app.platform.store import PlatformStore
+
+    root = tmp_path / "legacy"
+    root.mkdir()
+    with sqlite3.connect(root / "platform.db") as db:
+        db.execute(
+            "CREATE TABLE chat_messages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO chat_messages(id, project_id, role, content, created_at) VALUES(?,?,?,?,?)",
+            ("legacy-message", "legacy-project", "assistant", "An older reply", "2026-01-01T00:00:00+00:00"),
+        )
+
+    store = PlatformStore(root)
+    old = store.list_chat_messages("legacy-project")[0]
+    assert old.content == "An older reply"
+    assert old.response_time_ms is None
+
+    project = store.create_project("timed-chat")
+    saved = store.add_chat_message(project.id, "assistant", "New reply", response_time_ms=2345)
+    restored = PlatformStore(root).list_chat_messages(project.id)[0]
+    assert saved.response_time_ms == 2345
+    assert restored.response_time_ms == 2345
+
+
+def test_task_reply_duration_uses_task_creation_time():
+    from datetime import datetime, timedelta, timezone
+    from app.platform.models import Task
+    from app.platform.orchestrator import _task_response_time_ms
+
+    task = Task(
+        project_id="project",
+        prompt="measure this task",
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=3),
+    )
+    assert _task_response_time_ms(task) >= 2900
+
+
 def test_auth_disabled_by_default(tmp_path: Path, monkeypatch):
     monkeypatch.delenv('PLATFORM_PASSWORD', raising=False)
     client = TestClient(create_app(tmp_path))

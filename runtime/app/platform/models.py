@@ -65,6 +65,7 @@ class ChatMessage(BaseModel):
     role: str
     content: str
     created_at: datetime = Field(default_factory=utc_now)
+    response_time_ms: Optional[int] = None
 
 
 class UploadedFile(BaseModel):

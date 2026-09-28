@@ -58,6 +58,8 @@ def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
     first = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Tell me something"})
     assert first.status_code == 200
     assert first.json()["assistant"]["content"] == "Gemini reply to: Tell me something (turns=1)"
+    assert isinstance(first.json()["assistant"]["response_time_ms"], int)
+    assert first.json()["assistant"]["response_time_ms"] >= 0
 
     second = client.post(f"/api/projects/{project['id']}/chat", json={"message": "What did I say?"})
     assert second.status_code == 200
@@ -71,6 +73,7 @@ def test_project_chat_persists_messages_and_context(tmp_path, monkeypatch):
         ("user", "What did I say?"),
         ("assistant", "Gemini reply to: What did I say? (turns=2)"),
     ]
+    assert isinstance(history.json()[1]["response_time_ms"], int)
 
     # A fresh application instance reads the same SQLite conversation.
     fresh = TestClient(create_app(tmp_path, check_llm=False))
@@ -120,6 +123,8 @@ def test_project_chat_routes_change_requests_to_the_build_agent(tmp_path, monkey
     assert "engineering" in payload["plan"]["capabilities"]
     assert payload["task"]["prompt"] == "Please update the project README with setup instructions."
     assert payload["task"]["plan"]["intent"] == "engineering_task"
+    assert isinstance(payload["assistant"]["response_time_ms"], int)
+    assert payload["assistant"]["response_time_ms"] >= 0
     assert started and started[0].id == payload["task"]["id"]
     events = client.get(f"/api/tasks/{payload['task']['id']}/events/history").json()
     assert events[0]["type"] == "task.planned"

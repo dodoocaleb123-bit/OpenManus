@@ -71,6 +71,16 @@ def _human_timeout() -> float:
         return 900.0
 
 
+def _task_response_time_ms(task: Task) -> int:
+    """Measure user-perceived time from task creation through its assistant reply."""
+    started = task.created_at or task.started_at
+    if started is None:
+        return 0
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - started).total_seconds() * 1000))
+
+
 class TaskNotRunning(RuntimeError):
     pass
 
@@ -260,7 +270,7 @@ class AgentOrchestrator:
         await self.store.save_task(task)
         await self.store.save_checkpoint(task.id, "validated", {"verification": task.evidence["verification"], "artifacts": task.artifacts})
         await emit("coding.validation", "Fast-path validation passed", {"iteration": 1, "results": task.validation["results"], "fast_path": True})
-        await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
+        await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result, response_time_ms=_task_response_time_ms(task))
         task.status = TaskStatus.SUCCEEDED
         await emit("task.succeeded", "Fast operation completed and verified", {"result": task.result, "validation": task.validation, "evidence": task.evidence, "artifacts": task.artifacts, "fast_path": True})
         return True
@@ -390,7 +400,7 @@ class AgentOrchestrator:
                 task.status = TaskStatus.SUCCEEDED
                 await self.store.save_task(task)
                 await self.store.save_checkpoint(task.id, "research_complete", {"verified": True, "evidence": task.evidence["verification"]})
-                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
+                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result, response_time_ms=_task_response_time_ms(task))
                 await emit("task.succeeded", "Browser research completed without coding validation", {"result": task.result, "research_only": True})
                 return
 
@@ -439,7 +449,7 @@ class AgentOrchestrator:
                 except Exception as exc:
                     await emit("reasoning.review_skipped", "Reasoning review unavailable; deterministic verification remains authoritative", {"error": str(exc)[:500]})
             assistant_reply = summary or task.error or "Task completed."
-            await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", assistant_reply)
+            await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", assistant_reply, response_time_ms=_task_response_time_ms(task))
             if task.evidence.get("verification", {}).get("passed"):
                 task.status = TaskStatus.SUCCEEDED
                 task.checkpoint = "validated"
@@ -475,7 +485,7 @@ class AgentOrchestrator:
                 task.status = TaskStatus.SUCCEEDED
                 task.error = None
                 await self.store.save_task(task)
-                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result)
+                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result, response_time_ms=_task_response_time_ms(task))
                 await emit("task.succeeded", "Browser page extracted; model summary was unavailable", {"result": task.result, "fallback": True})
                 return
             raw_error = str(exc) or exc.__class__.__name__
@@ -511,6 +521,7 @@ class AgentOrchestrator:
                 task.project_id,
                 "assistant",
                 f"I couldn't complete that build. {task.error}",
+                response_time_ms=_task_response_time_ms(task),
             )
             await self.store.emit(Event(task_id=task.id, type="task.failed", message=task.error, data={"error": task.error}))
         finally:

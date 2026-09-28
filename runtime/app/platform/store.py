@@ -85,6 +85,7 @@ class PlatformStore:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    response_time_ms INTEGER,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
                 CREATE TABLE IF NOT EXISTS uploaded_files (
@@ -121,6 +122,9 @@ class PlatformStore:
             for name, definition in (("evidence", "TEXT"), ("artifacts", "TEXT"), ("recovery", "TEXT"), ("idempotency_key", "TEXT"), ("last_heartbeat", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+            chat_columns = {row[1] for row in db.execute("PRAGMA table_info(chat_messages)").fetchall()}
+            if "response_time_ms" not in chat_columns:
+                db.execute("ALTER TABLE chat_messages ADD COLUMN response_time_ms INTEGER")
 
     @staticmethod
     def _dt(value: str | None) -> datetime | None:
@@ -247,18 +251,20 @@ class PlatformStore:
         return ChatMessage(
             id=row["id"], project_id=row["project_id"], role=row["role"],
             content=row["content"], created_at=PlatformStore._dt(row["created_at"]),
+            response_time_ms=row["response_time_ms"] if "response_time_ms" in row.keys() else None,
         )
 
-    def add_chat_message(self, project_id: str, role: str, content: str) -> ChatMessage:
+    def add_chat_message(self, project_id: str, role: str, content: str, response_time_ms: int | None = None) -> ChatMessage:
         if not self.get_project(project_id):
             raise KeyError(f"Unknown project: {project_id}")
         if role not in {"user", "assistant", "system"}:
             raise ValueError("Chat message role must be user, assistant, or system")
-        message = ChatMessage(project_id=project_id, role=role, content=content)
+        response_time_ms = max(0, int(response_time_ms)) if response_time_ms is not None else None
+        message = ChatMessage(project_id=project_id, role=role, content=content, response_time_ms=response_time_ms)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO chat_messages(id,project_id,role,content,created_at) VALUES(?,?,?,?,?)",
-                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat()),
+                "INSERT INTO chat_messages(id,project_id,role,content,created_at,response_time_ms) VALUES(?,?,?,?,?,?)",
+                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat(), message.response_time_ms),
             )
         return message
 
