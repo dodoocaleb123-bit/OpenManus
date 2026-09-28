@@ -209,6 +209,9 @@ html.light-mode .workspace-title h3{color:#202634}
 .reply-duration{font-size:11px;color:var(--muted)}
 .streaming-reply{border-color:#40577b;box-shadow:0 0 0 1px #93c5fd16,0 8px 24px #0002}
 .streaming-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;min-height:1em}
+.reasoning-summary{margin:8px 0;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:var(--panel2);color:var(--text)}
+.reasoning-summary summary{cursor:pointer;font-size:12px;font-weight:700;color:var(--accent)}
+.reasoning-summary pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:12px;line-height:1.55;color:var(--muted);margin:8px 0 0}
 .streaming-text:after{content:'▍';color:var(--accent);animation:pulse 1s steps(2,end) infinite}
 .reply-copy{border:1px solid transparent;background:transparent;color:var(--muted);font-size:11px;padding:4px 8px;border-radius:7px}
 .reply-copy:hover{border-color:var(--line);background:var(--panel2);color:var(--text)}
@@ -520,6 +523,18 @@ if(['task.planned','task.recovery','task.retry_scheduled','reasoning.started','r
 
 const renderTaskEvent=render;
 render=function(ev){if(ev?.type==='assistant.delta'){lastEventId=ev.id;updateActivityStatus({type:'agent.step',message:'OpenManus is writing its response…'});appendReplyDraft('task',ev.data?.delta||ev.message||'');return}if(ev?.type==='assistant.stream.reset'){lastEventId=ev.id;clearReplyDraft('task');updateActivityStatus({type:'agent.step',message:'OpenManus is working through the next step…'});return}if(['task.succeeded','task.failed','task.cancelled'].includes(ev?.type))clearReplyDraft('task');return renderTaskEvent(ev)};
+const renderStreamEvent=render;
+// Only expose structured, user-facing plans/reviews here; raw private <think> text stays filtered.
+let reasoningSummaryPanel=null;
+function addReasoningSummary(ev){
+ if(!reasoningSummaryPanel||!reasoningSummaryPanel.node.isConnected){const node=el('details','reasoning-summary');node.append(el('summary','','Reasoning summary'));const body=el('div','reasoning-summary-body');node.append(body);const feed=$('feed');feed.insertBefore(node,processingPanel&&processingPanel.parentNode===feed?processingPanel:null);reasoningSummaryPanel={node,body}}
+ const kind=ev.type==='reasoning.plan'?'Plan':'Review',payload=ev.data?.plan??ev.data?.review??{};reasoningSummaryPanel.body.append(el('strong','',kind));reasoningSummaryPanel.body.append(el('pre','',JSON.stringify(payload,null,2)));
+}
+render=function(ev){
+ if(ev?.type==='reasoning.plan'||ev?.type==='reasoning.review'){lastEventId=ev.id;addReasoningSummary(ev);return renderStreamEvent({...ev,type:'agent.step',message:ev.type==='reasoning.plan'?'Reasoning plan ready':'Reasoning review complete'})}
+ if(ev?.type==='task.succeeded'){const statusEvent={...ev,data:{...(ev.data||{}),result:'Final output is shown in the OpenManus reply above.'}};return renderStreamEvent(statusEvent)}
+ return renderStreamEvent(ev)
+};
 const showTaskBeforeStreamDraft=showTask;
 showTask=async function(id,historical=true){clearReplyDraft('task');const result=await showTaskBeforeStreamDraft(id,historical);if(currentTask&&!['running','queued'].includes(currentTask.status))clearReplyDraft('task');return result};
 const finishTaskBeforeStreamDraft=finishTask;
