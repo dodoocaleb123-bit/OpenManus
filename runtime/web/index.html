@@ -194,8 +194,12 @@ if(tool==='bash')return '$ '+(a.command??'');if(tool==='str_replace_editor')retu
 function detailsBox(label,text){const d=el('details');d.append(el('summary','',label),el('pre','',text));return d}
 function render(ev){lastEventId=ev.id;const f=$('feed');const d=ev.data||{};let node;
 switch(ev.type){
-case 'task.planned':renderPlan(d.plan);node=el('div','ev sys','Plan created; execution is starting.');break;
-case 'agent.step':node=el('div','ev step',ev.message);break;
+	case 'task.planned':renderPlan(d.plan);node=el('div','ev sys','Plan created; execution is starting.');break;
+	case 'reasoning.started':case 'reasoning.review_started':node=el('div','ev sys','🧠 '+ev.message+' ('+(d.model||'reasoning model')+')');break;
+	case 'reasoning.plan':node=el('div','ev thought');node.append(el('strong','', '🧠 Reasoning plan'));node.append(detailsBox('Plan',JSON.stringify(d.plan||{},null,2)));break;
+	case 'reasoning.review':node=el('div','ev thought');node.append(el('strong','', '🧠 Reasoning review'));node.append(detailsBox('Review',JSON.stringify(d.review||{},null,2)));break;
+	case 'reasoning.skipped':case 'reasoning.review_skipped':node=el('div','ev sys','ℹ️ '+ev.message);break;
+	case 'agent.step':node=el('div','ev step',ev.message);break;
 case 'agent.thought':if(!d.content)return;node=el('div','ev thought',d.content);break;
 case 'agent.tool_call':node=el('div','ev tool');node.append(el('span','name',d.tool+' '),document.createTextNode(fmtArgs(d.tool,d.arguments)));break;
 case 'agent.tool_result':node=el('div','ev tool '+(d.ok?'':'bad'));node.append(detailsBox(`${d.ok?'✓':'✗'} ${d.tool} output${d.image?' (screenshot sent to the agent)':''}`,d.output||''));if(d.evidence&&Object.keys(d.evidence).length)node.append(detailsBox('Evidence',JSON.stringify(d.evidence,null,2)));if(d.artifacts?.length)node.append(detailsBox('Artifacts',JSON.stringify(d.artifacts,null,2)));if(d.retryable)node.append(el('div','muted','This failure may be retried.'));if(d.tool==='platform_browser')refreshShotSoon();if(d.tool==='platform_git')refreshProject();break;
@@ -212,7 +216,7 @@ case 'task.succeeded':node=el('div','ev good','🎉 Done. '+(d.result||ev.messag
 case 'task.failed':node=el('div','ev bad','⚠ '+ev.message+(d.result?'\n\nAgent summary: '+d.result:''));break;
 case 'task.cancelled':node=el('div','ev bad','⏹ Task cancelled');break;
 default:node=el('div','ev sys',ev.message)}
-if(['task.planned','task.recovery','task.retry_scheduled','agent.step','agent.thought','agent.tool_call','agent.tool_result','agent.question','agent.question_timeout','human.reply','human.message','coding.implementation','coding.validating','coding.validation','coding.repair','browser.started','browser.attached','github.pull_request','github.repository','task.succeeded','task.failed','task.cancelled'].includes(ev.type)){if(ev.type==='task.succeeded')processingPanel&&(processingPanel._status='done');if(ev.type==='task.failed')processingPanel&&(processingPanel._status='failed');if(ev.type==='task.cancelled')processingPanel&&(processingPanel._status='cancelled');addProcessingEvent(ev,node);updateProcessingHeader();return}const stick=f.scrollHeight-f.scrollTop-f.clientHeight<120;f.append(node);if(stick)f.scrollTop=f.scrollHeight}
+if(['task.planned','task.recovery','task.retry_scheduled','reasoning.started','reasoning.plan','reasoning.skipped','reasoning.review_started','reasoning.review','reasoning.review_skipped','agent.step','agent.thought','agent.tool_call','agent.tool_result','agent.question','agent.question_timeout','human.reply','human.message','coding.implementation','coding.validating','coding.validation','coding.repair','browser.started','browser.attached','github.pull_request','github.repository','task.succeeded','task.failed','task.cancelled'].includes(ev.type)){if(ev.type==='task.succeeded')processingPanel&&(processingPanel._status='done');if(ev.type==='task.failed')processingPanel&&(processingPanel._status='failed');if(ev.type==='task.cancelled')processingPanel&&(processingPanel._status='cancelled');addProcessingEvent(ev,node);updateProcessingHeader();return}const stick=f.scrollHeight-f.scrollTop-f.clientHeight<120;f.append(node);if(stick)f.scrollTop=f.scrollHeight}
 
 /* ---------------- browser ---------------- */
 async function attachProjectBrowser(){browserSession=null;updateBrowser();if(!selected)return;try{browserSession=await api(`/api/browser/projects/${selected.id}/session`);updateBrowser();startShots()}catch(e){stopShots()}}

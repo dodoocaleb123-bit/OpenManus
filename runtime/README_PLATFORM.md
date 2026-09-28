@@ -108,7 +108,10 @@ python run_platform.py                              # http://127.0.0.1:8000
 Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fallback, `PLATFORM_PASSWORD` (Basic auth),
 `PLATFORM_REQUIRE_AUTH=true` (fail closed if a password is missing),
 `PLATFORM_MAX_CONCURRENT_TASKS`, `PLATFORM_MAX_UPLOAD_MB`, `PLATFORM_IMAGE_MAX_TOKENS` (default `6144`),
-`PLATFORM_CHAT_MAX_TOKENS` (default `2400`), and `PLATFORM_DATA_DIR`
+`PLATFORM_CHAT_MAX_TOKENS` (default `2400`), `REASONING_LLM_MODEL`,
+`REASONING_LLM_BASE_URL`, `REASONING_LLM_API_KEY_01` … `_10`,
+`REASONING_LLM_ENABLED=true`, `REASONING_LLM_MODE=complex|always|off`,
+`REASONING_LLM_MAX_TOKENS` (default `1200`), and `PLATFORM_DATA_DIR`
 (database + workspaces location, default `workspace/`).
 
 ## Tests
@@ -140,3 +143,6 @@ page are faked; git operations run against local bare repositories.
   arbitrary source contents. Full task-level Docker isolation, durable browser
   profiles, multi-agent roles, app hosting, and RL trajectory integration remain
   follow-on subsystems rather than being represented as complete here.
+- The optional reasoning profile is disabled by default. When enabled, it plans and
+  reviews complex or risky tasks, while Qwen remains the only model that executes
+  tools; deterministic validation remains authoritative.

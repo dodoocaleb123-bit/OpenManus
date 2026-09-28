@@ -6,10 +6,12 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
-
+from app.config import config
+from app.llm import LLM
 from app.logger import logger
 from app.platform.browser import BrowserManager
 from app.platform.coding_loop import CodingLoop
+from app.platform.reasoning import make_plan, reasoning_enabled, review_result, should_reason
 from app.platform.llm_check import llm_problem
 from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 from app.platform.store import PlatformStore
@@ -348,6 +350,18 @@ class AgentOrchestrator:
             history = await asyncio.to_thread(self.store.list_chat_messages, task.project_id, 20)
             conversation = "\n".join(f"{item.role.upper()}: {item.content}" for item in history)
             conversation = conversation[-30000:]
+            reasoning_plan: dict[str, Any] | None = None
+            if reasoning_enabled() and should_reason(task.prompt, complexity=_task_complexity(task.prompt, bool(task.browser_session_id))) and "reasoning" in config.llm:
+                try:
+                    reasoning_llm = LLM(config_name="reasoning")
+                    await emit("reasoning.started", "Creating a selective reasoning plan before execution", {"model": reasoning_llm.model})
+                    reasoning_plan = await make_plan(reasoning_llm, prompt=task.prompt, conversation=conversation, project_name=project.name, workspace=project.workspace)
+                    task.evidence["reasoning"] = {"planning": reasoning_plan}
+                    await self.store.save_task(task)
+                    await self.store.save_checkpoint(task.id, "reasoning_planned", {"model": reasoning_llm.model, "plan": reasoning_plan})
+                    await emit("reasoning.plan", "Reasoning plan ready; Qwen remains the execution model", {"plan": reasoning_plan, "model": reasoning_llm.model})
+                except Exception as exc:
+                    await emit("reasoning.skipped", "Reasoning plan unavailable; continuing with the execution model", {"error": str(exc)[:500]})
             research_instructions = (
                 "BROWSER RESEARCH REQUIREMENT: This is a research-only request. Use the platform_browser tool to open the requested URL, "
                 "inspect the visible page, and extract enough relevant content to answer the user. Do not edit files, run project builds, "
@@ -357,6 +371,7 @@ class AgentOrchestrator:
             await agent.run(
                 f"RECENT PROJECT CONVERSATION:\n{conversation}\n\n"
                 f"CURRENT USER MESSAGE:\n{task.prompt}\n\n"
+                + (f"ADVISORY REASONING PLAN (inspect the workspace and correct it if needed):\n{reasoning_plan}\n\n" if reasoning_plan else "")
                 + research_instructions
                 + "UNIFIED CONVERSATION REQUIREMENT: Treat this as one continuous project conversation. "
                 "First understand the user's intent. If the user is asking a question, requesting an explanation, "
@@ -411,6 +426,18 @@ class AgentOrchestrator:
 
             summary = agent.final_summary() if hasattr(agent, "final_summary") else "Task completed."
             task.result = summary
+            if reasoning_plan and reasoning_enabled():
+                try:
+                    if "reasoning" in config.llm:
+                        reasoning_llm = LLM(config_name="reasoning")
+                        await emit("reasoning.review_started", "Reviewing the completed complex task", {"model": reasoning_llm.model})
+                        review = await review_result(reasoning_llm, prompt=task.prompt, summary=summary, validation=task.validation, evidence=task.evidence)
+                        task.evidence["reasoning"]["review"] = review
+                        await self.store.save_task(task)
+                        await self.store.save_checkpoint(task.id, "reasoning_reviewed", {"model": reasoning_llm.model, "review": review})
+                        await emit("reasoning.review", "Reasoning review recorded; deterministic verification remains authoritative", {"review": review, "model": reasoning_llm.model})
+                except Exception as exc:
+                    await emit("reasoning.review_skipped", "Reasoning review unavailable; deterministic verification remains authoritative", {"error": str(exc)[:500]})
             assistant_reply = summary or task.error or "Task completed."
             await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", assistant_reply)
             if task.evidence.get("verification", {}).get("passed"):

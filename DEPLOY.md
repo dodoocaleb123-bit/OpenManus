@@ -113,6 +113,7 @@ How the platform handles the tokens, whichever option you pick:
 | `LOCAL_LLM_BASE_URL` | Container-reachable Ollama endpoint, e.g. `http://host.docker.internal:11434/v1` |
 | `VISION_LLM_MODEL`, `VISION_LLM_BASE_URL`, `VISION_LLM_API_KEY_01` … `_10` | Cloud vision model, endpoint, and 10-key pool |
 | `HEAVY_CODING_LLM_MODEL`, `HEAVY_CODING_LLM_BASE_URL`, `HEAVY_CODING_LLM_API_KEY_01` … `_10` | Cloud heavy-coding model, endpoint, and 10-key pool |
+| `REASONING_LLM_MODEL`, `REASONING_LLM_BASE_URL`, `REASONING_LLM_API_KEY_01` … `_10` | Optional selective planner/reviewer model |
 | `OLLAMA_FALLBACK_LLM_MODEL`, `OLLAMA_FALLBACK_LLM_BASE_URL`, `OLLAMA_FALLBACK_LLM_API_KEY_01` … `_10` | Cloud fallback model, endpoint, and 10-key pool |
 | `LLM_API_KEY`, `LLM_API_KEYS` | Legacy single-provider compatibility only; do not use in the new three-pool setup |
 | `GITHUB_TOKEN` | from step 3 (leave empty to skip GitHub features) |
@@ -171,12 +172,22 @@ OLLAMA_FALLBACK_LLM_API_KEY_07=fallback-key-07
 OLLAMA_FALLBACK_LLM_API_KEY_08=fallback-key-08
 OLLAMA_FALLBACK_LLM_API_KEY_09=fallback-key-09
 OLLAMA_FALLBACK_LLM_API_KEY_10=fallback-key-10
+
+REASONING_LLM_MODEL=deepseek-r1:7b
+REASONING_LLM_BASE_URL=http://host.docker.internal:11434/v1
+REASONING_LLM_API_KEY_01=ollama
+REASONING_LLM_ENABLED=true
+REASONING_LLM_MODE=complex
+REASONING_LLM_MAX_TOKENS=1200
 ```
 
 Each key is a separate `.env` entry, so the file stays readable. The parser also
 still accepts the older `*_API_KEYS=key1,key2` format. Routing is: deterministic normal code first; then Ollama for tasks it can handle;
 vision tasks use the vision pool; tasks classified as beyond Ollama use the heavy-coding
-pool; and Ollama failures/timeouts switch to the fallback pool. Each pool rotates its
+pool; and Ollama failures/timeouts switch to the fallback pool. When explicitly enabled,
+the reasoning profile plans complex or risky tasks before Qwen executes them and reviews
+the result after deterministic validation. It never receives tool authority, and its
+review cannot override deterministic verification. Simple requests bypass it. Each pool rotates its
 own keys. Keys are read only from environment variables, never written to Git, and
 never displayed in the UI. Ten keys are not a quota bypass: keys belonging to the same
 Google Cloud project generally share project-level RPM/TPM/RPD limits, so separate
@@ -280,11 +291,14 @@ silently, while the server blocks deletion of running tasks/projects.
 | `LLM_REQUEST_TIMEOUT` | 180 | Seconds allowed for one local or cloud model request before failover/retry |
 | `LLM_SUPPORTS_IMAGES` | auto | `true`/`false` if vision support is misdetected for your model |
 | `LLM_REASONING_MODEL` | auto | `true`/`false` if your model rejects `temperature`/`max_tokens` |
+| `REASONING_LLM_ENABLED` | false | Explicitly enable selective reasoning planning/review |
+| `REASONING_LLM_MODE` | complex | `complex`, `always`, or `off` |
+| `REASONING_LLM_MAX_TOKENS` | 1200 | Bounded output budget for each reasoning call |
 | `PLATFORM_USERNAME` | admin | Login username |
 
 ### Local-first hybrid routing
 
-When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses Ollama for normal coding and conversation. Simple create-and-verify file requests use a deterministic fast path and do not call an LLM. Vision tasks use `VISION_LLM_*`; heavy coding uses `HEAVY_CODING_LLM_*`; and Ollama failures use `OLLAMA_FALLBACK_LLM_*`.
+When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses Ollama for normal coding and conversation. Simple create-and-verify file requests use a deterministic fast path and do not call an LLM. Vision tasks use `VISION_LLM_*`; heavy coding uses `HEAVY_CODING_LLM_*`; complex tasks can use `REASONING_LLM_*` for planning/review; and Ollama failures use `OLLAMA_FALLBACK_LLM_*`.
 
 Set these variables when local-first mode is enabled:
 

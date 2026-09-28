@@ -24,6 +24,8 @@ Configuration sources, in order of precedence:
        LLM_VISION_MODEL      optional   adds an [llm.vision] section
        LLM_VISION_BASE_URL   optional   defaults to LLM_BASE_URL
        LLM_VISION_API_KEY    optional   defaults to LLM_API_KEY
+       REASONING_LLM_MODEL, REASONING_LLM_BASE_URL, REASONING_LLM_API_KEY_01 … _10
+                              optional selective planning/review provider
 
 3. An existing ``config/config.toml`` (e.g. bind-mounted) is left untouched.
 
@@ -137,6 +139,7 @@ def render_llm_config() -> str:
     temperature = toml_num("LLM_TEMPERATURE", env("LLM_TEMPERATURE") or "1.0", float)
     append_pool(lines, "vision", env("VISION_LLM_MODEL"), env("VISION_LLM_BASE_URL"), key_pool("VISION_LLM_API_KEYS"), max_tokens, temperature)
     append_pool(lines, "heavy_coding", env("HEAVY_CODING_LLM_MODEL"), env("HEAVY_CODING_LLM_BASE_URL"), key_pool("HEAVY_CODING_LLM_API_KEYS"), max_tokens, temperature)
+    append_pool(lines, "reasoning", env("REASONING_LLM_MODEL"), env("REASONING_LLM_BASE_URL"), key_pool("REASONING_LLM_API_KEYS"), max_tokens, temperature)
     append_pool(lines, "fallback", env("OLLAMA_FALLBACK_LLM_MODEL"), env("OLLAMA_FALLBACK_LLM_BASE_URL"), key_pool("OLLAMA_FALLBACK_LLM_API_KEYS"), max_tokens, temperature)
 
     # Backward-compatible migration path for existing local-first deployments.
