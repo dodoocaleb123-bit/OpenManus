@@ -179,6 +179,29 @@ html,body{height:100%;overflow:hidden}
 
 html.light-mode .workspace-title h3{color:#202634}
 @media(max-width:430px){.header-right #pillGithub{display:none}}
+
+.history-item{align-items:center;gap:7px;border-radius:10px;padding:5px 6px}
+.history-item.selected{background:#121b2a;border-color:#45577a}
+.history-open{flex:1;min-width:0;display:flex;align-items:center;gap:7px;text-align:left;border:0;background:transparent;padding:4px 3px;color:var(--text)}
+.history-open:hover{background:transparent;border-color:transparent;color:#dbeafe}
+.history-open-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}
+.history-prompt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#d4dbe6}
+.history-date{font-size:10px;color:var(--muted)}
+.history-open-label{font-size:10px;color:var(--accent);opacity:.8}
+.history-item .badge{flex:0 0 auto}
+.history-item .menu-wrap{margin-left:0}
+.history-return{border:1px solid #35415a;border-radius:999px;padding:5px 9px;font-size:11px;color:#dbeafe;background:#141b29}
+.history-return[hidden]{display:none}
+#cancelTaskDialog{width:min(440px,calc(100vw - 32px));padding:0;border:1px solid #384354;border-radius:16px;background:#11151d;color:var(--text);box-shadow:0 24px 80px #000b}
+#cancelTaskDialog::backdrop{background:#02040ac9;backdrop-filter:blur(3px)}
+.cancel-dialog-content{padding:22px}
+.cancel-dialog-content h2{margin:0 0 9px;font-size:18px}
+.cancel-dialog-content p{margin:0;color:var(--muted);font-size:13px;line-height:1.6}
+.cancel-dialog-task{display:block;margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:9px;background:#0b0f15;color:#d8dfeb;font-size:12px;line-height:1.5;max-height:90px;overflow:auto}
+.cancel-dialog-task[hidden]{display:none}
+.cancel-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:19px}
+.cancel-dialog-actions .danger{background:#49232a;border-color:#71333e;color:#ffdbe0}
+
 </style>
 </head>
 <body>
@@ -206,7 +229,7 @@ html.light-mode .workspace-title h3{color:#202634}
   </aside>
 
   <div class="col center">
-    <div class="conversation-head"><div class="conversation-title"><span class="agent-avatar">O</span><div><div id="selected" style="font-weight:700">Create or select a project to start.</div><div id="conversationSubtitle" class="conversation-subtitle">One continuous project conversation</div></div></div><div class="header-right"><span id="gitInfo" class="muted"></span><button id="workspaceToggleSmall" class="icon-btn" onclick="toggleRight()" title="Toggle task workspace" aria-label="Toggle task workspace" aria-controls="rightPanel" aria-expanded="false">⋯</button></div></div>
+    <div class="conversation-head"><div class="conversation-title"><span class="agent-avatar">O</span><div><div id="selected" style="font-weight:700">Create or select a project to start.</div><div id="conversationSubtitle" class="conversation-subtitle">One continuous project conversation</div></div></div><div class="header-right"><span id="gitInfo" class="muted"></span><button id="returnToLatest" class="history-return" onclick="returnToLatestTask()" title="Return to the latest task" aria-label="Return to the latest task" hidden>↶ Latest</button><button id="workspaceToggleSmall" class="icon-btn" onclick="toggleRight()" title="Toggle task workspace" aria-label="Toggle task workspace" aria-controls="rightPanel" aria-expanded="false">⋯</button></div></div>
     <div id="agentStatus" class="agent-status" style="display:none"><span class="pulse"></span><div class="status-main"><strong id="agentStatusTitle">OpenManus is working</strong><span id="agentStatusDetail">Preparing your request…</span><div id="taskProgress" class="task-progress"></div></div><div class="status-actions"><span id="agentTimer" class="muted"></span><button onclick="toggleProcessingDetails()">Details</button><button id="statusStop" class="danger" onclick="cancelTask()">Stop</button></div></div>
     <div class="feed-wrap">
       <div id="feed"><div class="feed-empty"><div><div class="welcome-kicker">Your local AI workspace</div><strong>What can OpenManus do for you?</strong><span>Ask a question, describe an idea, upload a file, or request a change.</span><div class="quick-actions"><button class="quick-action" onclick="quickPrompt('Inspect my repository and explain its architecture')"><strong>Inspect repository</strong><span>Understand files, structure, and architecture</span></button><button class="quick-action" onclick="quickPrompt('Build a polished web application from my description')"><strong>Build a website</strong><span>Create, test, and preview an application</span></button><button class="quick-action" onclick="quickPrompt('Analyze the attached image and answer every question step by step')"><strong>Analyze an image</strong><span>Upload an image and get a complete explanation</span></button><button class="quick-action" onclick="quickPrompt('Research this topic and cite the sources you used')"><strong>Research a topic</strong><span>Browse, compare, and summarize information</span></button></div></div></div></div>
@@ -255,7 +278,7 @@ html.light-mode .workspace-title h3{color:#202634}
 
 <script>
 "use strict";
-let uploadedNames={},uploadedPreviews={},projects=[],selected=null,currentTask=null,es=null,browserSession=null,browserTimer=null,lastEventId=null,mode='unified',action='unified',pendingUploadIds=[],activeImageId=null,processingPanel=null,processingBody=null,processingSteps=new Map(),processingActiveStep=0,processingOpen=false,taskProgress=[],terminalLog=[];
+let uploadedNames={},uploadedPreviews={},projects=[],selected=null,currentTask=null,selectedTaskId=null,historyView=false,es=null,browserSession=null,browserTimer=null,lastEventId=null,mode='unified',action='unified',pendingUploadIds=[],activeImageId=null,processingPanel=null,processingBody=null,processingSteps=new Map(),processingActiveStep=0,processingOpen=false,taskProgress=[],terminalLog=[],pendingStopMessage='';
 const $=id=>document.getElementById(id);
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
 async function api(url,opts={}){const confirmed=opts.confirm;delete opts.confirm;if(opts.body&&typeof opts.body!=='string'){opts.body=JSON.stringify(opts.body);opts.headers={'Content-Type':'application/json',...(opts.headers||{})}}if(confirmed)opts.headers={'X-OpenManus-Confirm':'true',...(opts.headers||{})};const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok){const detail=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join('; '):d.detail;throw Error(detail||`Request failed (${r.status})`)}return d}
@@ -285,8 +308,7 @@ async function renameProject(p){closeMenus();const name=window.prompt('New proje
 async function deleteProject(p){closeMenus();if(!window.confirm(`Delete project "${p.name}" and its workspace, chat, and build activity? This cannot be undone.`))return;try{await api(`/api/projects/${p.id}`,{method:'DELETE',confirm:true});projects=projects.filter(x=>x.id!==p.id);if(selected?.id===p.id){selected=null;localStorage.removeItem('project');currentTask=null;closeStream();$('feed').innerHTML='<div class="ev sys">Select or create a project to start.</div>';$('selected').textContent='Create or select a project to start.';$('gitInfo').textContent='';$('runBtn').disabled=true;$('history').textContent='Select a project.'}renderProjects()}catch(e){alert(e.message)}}
 async function createProject(){const field=$('projectName');const name=field.value.trim();if(!name){field.style.display='block';field.focus();return}try{const p=await api('/api/projects',{method:'POST',body:{name}});projects.push(p);field.value='';field.style.display='none';selectProject(p)}catch(e){alert(e.message)}}
 function renderGitInfo(){$('gitInfo').textContent=selected.git_ready?`${selected.repository||'local git repository'} · branch ${selected.branch||'?'}`:'No repository yet — connect one, or let the agent publish the project to GitHub.'}
-async function selectProject(p){selected=p;activeImageId=localStorage.getItem(`active-image:${p.id}`)||null;localStorage.setItem('project',p.id);$('selected').textContent=p.name;$('headerProject').textContent=p.name;$('conversationSubtitle').textContent='One continuous project conversation';renderGitInfo();renderAttachments();$('runBtn').disabled=false;renderProjects();$('gitOut').textContent='';closeStream();$('feed').innerHTML='';
-await refreshHistory();await setMode(mode);attachProjectBrowser()}
+async function selectProject(p){selected=p;selectedTaskId=null;historyView=false;currentTask=null;resetAgentStatus();activeImageId=localStorage.getItem(`active-image:${p.id}`)||null;localStorage.setItem('project',p.id);$('selected').textContent=p.name;$('headerProject').textContent=p.name;$('conversationSubtitle').textContent='One continuous project conversation';$('returnToLatest').hidden=true;renderGitInfo();renderAttachments();$('runBtn').disabled=false;renderProjects();$('gitOut').textContent='';closeStream();$('feed').innerHTML='';await setMode();attachProjectBrowser()}
 async function refreshProject(){if(!selected)return;try{selected=await api(`/api/projects/${selected.id}`);projects=projects.map(x=>x.id===selected.id?selected:x);$('headerProject').textContent=selected.name;renderGitInfo();renderProjects()}catch(e){} }
 
 function updateDrawerBackdrop(){const backdrop=$('drawerBackdrop');if(!backdrop)return;const open=window.matchMedia('(max-width:1280px)').matches&&($('sidebar').classList.contains('open')||$('rightPanel').classList.contains('open'));backdrop.classList.toggle('visible',open)}
@@ -296,17 +318,39 @@ function closeDrawers(){ $('sidebar').classList.remove('open');setWorkspaceOpen(
 function initWorkspaceLayout(){const saved=localStorage.getItem('openmanus.workspaceOpen')==='1';setWorkspaceOpen(saved,false);if(localStorage.getItem('openmanus.theme')==='light')document.documentElement.classList.add('light-mode');document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawers()});window.addEventListener('resize',updateDrawerBackdrop)}
 function toggleTheme(){const light=document.documentElement.classList.toggle('light-mode');localStorage.setItem('openmanus.theme',light?'light':'dark')}
 function toggleRight() {const open=!$('appLayout').classList.contains('right-collapsed')||$('rightPanel').classList.contains('open');setWorkspaceOpen(!open,true)}
-function newTask(){if(!selected){$('projectName').style.display='block';$('projectName').placeholder='Name this project to begin';$('projectName').focus();return}$('prompt').value='';$('prompt').focus();currentTask=null;setRunning(false)}
+function newTask(){if(currentTask&&['running','queued'].includes(currentTask.status)){$('prompt').focus();$('runHint').style.display='block';$('runHint').textContent='A task is already running. Send it guidance or stop it before starting another.';return}historyView=false;selectedTaskId=null;currentTask=null;resetAgentStatus();updateTaskHeader(null,false);if(!selected){$('projectName').style.display='block';$('projectName').placeholder='Name this project to begin';$('projectName').focus();return}$('prompt').value='';$('prompt').focus()}
 function toggleProcessingDetails(){if(processingPanel&&processingPanel._toggle)processingPanel._toggle.click()}
 let agentStartedAt=0,agentTimerHandle=null;
 function updateAgentTimer(){if(!agentStartedAt)return;const elapsed=Math.max(0,Math.floor((Date.now()-agentStartedAt)/1000));const m=Math.floor(elapsed/60),s=String(elapsed%60).padStart(2,'0');$('agentTimer').textContent=`${m}:${s}`}
 
 /* ---------------- tasks ---------------- */
-async function refreshHistory(){if(!selected)return[];try{const ts=await api(`/api/projects/${selected.id}/tasks`);const box=$('history');box.innerHTML='';if(!ts.length){box.textContent='No builds yet. Build progress will appear in the conversation.';return ts}ts.slice().reverse().forEach(t=>{const r=el('div','repo');const info=el('div');const top=el('div');top.append(el('span','badge '+t.status,t.status));info.append(top,el('div','muted',t.prompt.slice(0,80)));r.append(info);if(!['running','queued'].includes(t.status)){const b=el('button','','Retry');b.onclick=()=>resumeTask(t.id);r.append(b)}const {wrap,button}=menuButton();button.onclick=e=>{e.stopPropagation();const old=wrap.querySelector('.context-menu');closeMenus();if(old)return;const m=el('div','context-menu');const del=el('button','danger','Delete');del.onclick=()=>deleteBuild(t);m.append(del);wrap.append(m)};wrap.append(button);r.append(wrap);box.append(r)});return ts}catch(e){$('history').textContent=e.message;return[]}}
-async function deleteBuild(t){closeMenus();if(!window.confirm('Delete this build activity from the list? The project files and conversation will remain.'))return;try{await api(`/api/tasks/${t.id}`,{method:'DELETE',confirm:true});if(currentTask?.id===t.id){currentTask=null;closeStream();setRunning(false)}refreshHistory()}catch(e){alert(e.message)}}
+async function refreshHistory(){
+if(!selected)return[];
+try{
+ const tasks=await api(`/api/projects/${selected.id}/tasks`);const box=$('history');box.innerHTML='';
+ if(!tasks.length){box.textContent='No builds yet. Build progress will appear in the conversation.';return tasks}
+ tasks.slice().reverse().forEach(task=>{
+  const row=el('div','repo history-item'+(selectedTaskId===task.id?' selected':''));
+  const open=el('button','history-open');open.type='button';open.title='Open this task and restore its activity';open.setAttribute('aria-label',`Open ${task.status} task: ${task.prompt}`);
+  const copy=el('span','history-open-copy');copy.append(el('span','badge '+task.status,task.status),el('span','history-prompt',task.prompt||'Untitled task'));
+  const created=task.created_at?new Date(task.created_at):null;copy.append(el('span','history-date',created&&!Number.isNaN(created.valueOf())?created.toLocaleString():'Task history'));
+  open.append(copy,el('span','history-open-label','Open'));open.onclick=()=>showTask(task.id,true);row.append(open);
+  if(!['running','queued'].includes(task.status)){const retry=el('button','','Retry');retry.title='Resume or retry this task';retry.onclick=e=>{e.stopPropagation();resumeTask(task.id)};row.append(retry)}
+  const {wrap,button}=menuButton();button.onclick=e=>{e.stopPropagation();const old=wrap.querySelector('.context-menu');closeMenus();if(old)return;const menu=el('div','context-menu');const del=el('button','danger','Delete');del.onclick=()=>deleteBuild(task);menu.append(del);wrap.append(menu)};wrap.append(button);row.append(wrap);box.append(row);
+ });
+ return tasks;
+}catch(e){$('history').textContent=e.message;return[]}
+}
+async function deleteBuild(t){closeMenus();if(!window.confirm('Delete this build activity from the list? The project files and conversation will remain.'))return;try{await api(`/api/tasks/${t.id}`,{method:'DELETE',confirm:true});if(currentTask?.id===t.id){currentTask=null;selectedTaskId=null;historyView=false;closeStream();resetAgentStatus();updateTaskHeader(null,false)}refreshHistory()}catch(e){alert(e.message)}}
 function setAction(next='unified'){action='unified';$('runHint').textContent=currentTask&&['running','queued'].includes(currentTask.status)?'Your message will be delivered to the agent.':'The assistant will decide whether to answer, inspect, or make and verify changes.';$('runBtn').textContent='Send'}
-function setRunning(on){if(on){clearTaskProgress();updateTaskProgress({type:'reasoning.started'});if(localStorage.getItem('openmanus.workspaceOpen')===null)setWorkspaceOpen(true,false)}$('cancelBtn').style.display='none';$('statusStop').style.display=on?'inline-block':'none';$('agentStatus').style.display=on?'flex':'none';if(on){agentStartedAt=agentStartedAt||Date.now();clearInterval(agentTimerHandle);agentTimerHandle=setInterval(updateAgentTimer,1000);updateAgentTimer();$('agentStatus').classList.remove('done');$('agentStatusTitle').textContent='OpenManus is working';$('agentStatusDetail').textContent='Planning, building, and verifying your request…'}else{clearInterval(agentTimerHandle);agentTimerHandle=null;if(agentStartedAt){$('agentStatus').style.display='flex';$('agentStatus').classList.add('done');$('agentStatusTitle').textContent='Agent task completed';$('agentStatusDetail').textContent='Your conversation and evidence are ready';$('statusStop').style.display='none';setTimeout(()=>{$('agentStatus').style.display='none'},5000)}agentStartedAt=0}setAction(action)}
-async function setMode(){mode='unified';closeStream();showQuestion(null);currentTask=null;if(selected){await loadChat();const ts=await refreshHistory();const active=ts.find(t=>['running','queued'].includes(t.status));if(active){currentTask=active;setRunning(true);await appendTaskHistory(active.id);openStream(active.id)}}else setRunning(false)}
+function setRunning(on,startedAt=null){if(on){clearTaskProgress();updateTaskProgress({type:'reasoning.started'});if(localStorage.getItem('openmanus.workspaceOpen')===null)setWorkspaceOpen(true,false)}$('cancelBtn').style.display='none';$('statusStop').style.display=on?'inline-block':'none';$('agentStatus').style.display=on?'flex':'none';if(on){const parsed=startedAt?Date.parse(startedAt):0;agentStartedAt=Number.isFinite(parsed)&&parsed>0?parsed:(agentStartedAt||Date.now());clearInterval(agentTimerHandle);agentTimerHandle=setInterval(updateAgentTimer,1000);updateAgentTimer();$('agentStatus').classList.remove('done');$('agentStatusTitle').textContent='OpenManus is working';$('agentStatusDetail').textContent='Planning, building, and verifying your request…'}else{clearInterval(agentTimerHandle);agentTimerHandle=null;if(agentStartedAt){$('agentStatus').style.display='flex';$('agentStatus').classList.add('done');$('agentStatusTitle').textContent='Agent task completed';$('agentStatusDetail').textContent='Your conversation and evidence are ready';$('statusStop').style.display='none';setTimeout(()=>{$('agentStatus').style.display='none'},5000)}agentStartedAt=0}setAction(action)}
+async function setMode(){
+mode='unified';closeStream();showQuestion(null);currentTask=null;selectedTaskId=null;historyView=false;resetAgentStatus();updateTaskHeader(null,false);
+if(!selected){setRunning(false);return}
+const tasks=await refreshHistory();const active=tasks.find(task=>['running','queued'].includes(task.status));
+if(active){await showTask(active.id,false);return}
+await loadChat();updateTaskHeader(null,false);
+}
 async function appendTaskHistory(id){const evs=await api(`/api/tasks/${id}/events/history`).catch(()=>[]);evs.forEach(render)}
 function showProjectWelcome(){const box=el('div','feed-empty');const body=el('div');body.append(el('div','welcome-kicker','Project workspace'));body.append(el('strong','',`Ready to work on ${selected?.name||'this project'}`));body.append(el('span','', 'Ask a question or choose a starting point. Open the workspace panel whenever you want to inspect files, browser activity, GitHub, or evidence.'));const actions=el('div','quick-actions');[['Inspect repository','Map the project structure and explain its architecture'],['Build a website','Build and verify a polished web application in this project'],['Run tests','Run the relevant project tests and summarize the results'],['Review GitHub','Inspect the connected repository and current branch']].forEach(([title,prompt])=>{const b=el('button','quick-action');b.append(el('strong','',title),el('span','',prompt));b.onclick=()=>quickPrompt(prompt);actions.append(b)});body.append(actions);box.append(body);$('feed').append(box)}
 async function loadChat(){if(!selected)return;try{const messages=await api(`/api/projects/${selected.id}/chat`);$('feed').innerHTML='';resetProcessing();if(!messages.length){showProjectWelcome();return}messages.forEach(renderChatMessage);$('feed').scrollTop=$('feed').scrollHeight}catch(e){$('feed').innerHTML='';resetProcessing();$('feed').append(el('div','ev bad',e.message))}}
@@ -322,19 +366,52 @@ function typesetMath(node,attempt=0){if(!node||!node.textContent||!/[\\$][\\(\\[
 function renderDiagrams(node,attempt=0){const sources=[...node.querySelectorAll('.mermaid-source')];if(!sources.length)return;if(!window.mermaid){if(attempt<20)setTimeout(()=>renderDiagrams(node,attempt+1),250);return}sources.forEach((source,index)=>{const diagram=el('div','mermaid');diagram.textContent=source.textContent.trim();source.replaceWith(diagram)});window.mermaid.run({nodes:[...node.querySelectorAll('.mermaid')]}).catch(()=>{})}
 function renderChatMessage(message,before=null){const node=el('div','ev '+(message.role==='user'?'user':'assistant'));if(message.role==='assistant')node.innerHTML=renderMarkdown(message.content);else node.textContent=message.content;const feed=$('feed');if(before&&before instanceof Node&&before.parentNode===feed)feed.insertBefore(node,before);else feed.append(node);if(message.role==='assistant'){typesetMath(node);renderDiagrams(node)}}
 function renderPlan(plan){if(!plan)return;const box=el('div','ev plan');const title=el('strong','',`Plan · ${plan.intent||'unified assistant'}`);box.append(title);if(plan.capabilities?.length)box.append(el('div','muted','Capabilities: '+plan.capabilities.join(' · ')));(plan.steps||[]).forEach((step,i)=>box.append(el('div','plan-step',`${i+1}. ${step}`)));$('feed').append(box)}
-async function showTask(t){closeStream();currentTask=t;lastEventId=null;await appendTaskHistory(t.id);const fresh=await api(`/api/tasks/${t.id}`);currentTask=fresh;const live=['running','queued'].includes(fresh.status);setRunning(live);showQuestion(fresh.pending_question);if(live)openStream(fresh.id)}
-function isStopRequest(text){return /\b(stop|cancel|abort|halt|terminate)\b/i.test(text)&&/\b(task|build|agent|job|process|request|it)\b/i.test(text)}
-async function stopFromChat(text){if(!currentTask)return;renderChatMessage({role:'user',content:text});$('prompt').value='';try{await api(`/api/tasks/${currentTask.id}/cancel`,{method:'POST',body:{message:text}});renderChatMessage({role:'assistant',content:'I stopped the running build. Its conversation and activity remain available above.'})}catch(e){$('feed').append(el('div','ev bad',e.message))}}
+async function showTask(taskOrId,historical=true){
+if(!selected)return;
+const taskId=typeof taskOrId==='string'?taskOrId:taskOrId?.id;if(!taskId)return;
+if(currentTask&&currentTask.id!==taskId&&['running','queued'].includes(currentTask.status)){
+ if(!window.confirm('Another task is still running. Opening this task will pause its live progress view, but will not stop it. You can reopen the running task from the list. Continue?'))return;
+}
+closeStream();lastEventId=null;
+try{
+ let task=await api(`/api/tasks/${taskId}`);if(task.project_id!==selected.id)throw Error('That task belongs to a different project.');
+ currentTask=task;selectedTaskId=task.id;historyView=historical;updateTaskHeader(task,historical);
+ const live=['running','queued'].includes(task.status);if(live)setRunning(true,task.started_at);else resetAgentStatus();
+ await loadChat();await appendTaskHistory(task.id);
+ currentTask=await api(`/api/tasks/${task.id}`).catch(()=>task);const stillLive=['running','queued'].includes(currentTask.status);
+ updateTaskHeader(currentTask,historical);
+ if(stillLive){if(!live)setRunning(true,currentTask.started_at);showQuestion(currentTask.pending_question);renderChoices(currentTask.pending_question);openStream(currentTask.id)}
+ else{closeStream();showQuestion(null);if(agentStartedAt){clearInterval(agentTimerHandle);agentTimerHandle=null;agentStartedAt=0;$('agentStatus').style.display='none'}}
+ if(historical&&processingPanel&&processingPanel._toggle)processingPanel._toggle.click();
+ await refreshHistory();if($('paneEvidence').style.display!=='none')loadEvidence();if($('paneCheckpoints').style.display!=='none')loadCheckpoints();$('feed').scrollTop=$('feed').scrollHeight;
+}catch(e){$('feed').append(el('div','ev bad',e.message))}
+}
+function updateTaskHeader(task=null,historical=false){
+ historyView=historical;const subtitle=$('conversationSubtitle');const back=$('returnToLatest');
+ if(task){const prompt=String(task.prompt||'Task').replace(/\s+/g,' ').trim();subtitle.textContent=`${task.status||'task'} · ${prompt.length>92?prompt.slice(0,89)+'…':prompt}`}
+ else subtitle.textContent=selected?'One continuous project conversation':'One continuous project conversation';
+ if(back)back.hidden=!historical;
+}
+function resetAgentStatus(){clearInterval(agentTimerHandle);agentTimerHandle=null;agentStartedAt=0;const status=$('agentStatus');if(status){status.style.display='none';status.classList.remove('done')}if($('agentTimer'))$('agentTimer').textContent='';if($('statusStop'))$('statusStop').style.display='none';clearTaskProgress()}
+async function returnToLatestTask(){if(!selected)return;try{const tasks=await api(`/api/projects/${selected.id}/tasks`);const latest=tasks.slice().sort((a,b)=>String(a.created_at||'').localeCompare(String(b.created_at||''))).at(-1);if(latest){await showTask(latest.id,false);return}closeStream();currentTask=null;selectedTaskId=null;historyView=false;resetAgentStatus();updateTaskHeader(null,false);await loadChat();await refreshHistory()}catch(e){$('feed').append(el('div','ev bad',e.message))}}
+function isStopRequest(text){const value=String(text||'').trim();return /\b(stop|cancel|abort|halt|terminate)\b/i.test(value)&&(/\b(task|build|agent|job|process|request|it|this)\b/i.test(value)||value.split(/\s+/).length<=4)}
+function requestCancelTask(message=''){if(!currentTask||!['running','queued'].includes(currentTask.status))return;pendingStopMessage=String(message||'').trim();const promptBox=$('cancelTaskPrompt');promptBox.hidden=!pendingStopMessage;promptBox.textContent=pendingStopMessage;const dialog=$('cancelTaskDialog');if(dialog&&!dialog.open)dialog.showModal()}
+function dismissCancelTask(){const dialog=$('cancelTaskDialog');if(dialog?.open)dialog.close();if(pendingStopMessage){$('prompt').value=pendingStopMessage;$('prompt').focus()}pendingStopMessage=''}
+async function confirmCancelTask(){if(!currentTask||!['running','queued'].includes(currentTask.status)){dismissCancelTask();return}const task=currentTask,message=pendingStopMessage;pendingStopMessage='';$('cancelTaskDialog').close();if(message){renderChatMessage({role:'user',content:message});$('prompt').value=''}try{await api(`/api/tasks/${task.id}/cancel`,{method:'POST',...(message?{body:{message}}:{})})}catch(e){if(message)$('prompt').value=message;alert(e.message)}}
 async function submitPrompt(){if(!selected)return;const text=$('prompt').value.trim();if(!text)return;
-if(currentTask&&['running','queued'].includes(currentTask.status)){renderChatMessage({role:'user',content:text});$('prompt').value='';showQuestion(null);try{await api(`/api/tasks/${currentTask.id}/messages`,{method:'POST',body:{message:text}})}catch(e){$('feed').append(el('div','ev bad',e.message))}return}
-const button=$('runBtn');button.disabled=true;const attachmentIds=[...new Set(pendingUploadIds)].slice(-4);pendingUploadIds.splice(0);renderAttachments();renderChatMessage({role:'user',content:text+(attachmentIds.length?'\n📎 attachment(s) included':'')});$('prompt').value='';try{const result=await api(`/api/projects/${selected.id}/chat`,{method:'POST',body:{message:text,attachment_ids:attachmentIds,browser_session_id:browserSession?.id||null}});if(result.plan?.requires_plan)renderPlan(result.plan);renderChatMessage(result.assistant);if(result.kind==='task'){currentTask=result.task;lastEventId=null;setRunning(true);openStream(result.task.id);refreshHistory()}else{$('feed').scrollTop=$('feed').scrollHeight}}catch(e){$('feed').append(el('div','ev bad',e.message))}finally{button.disabled=false}}
-
-async function cancelTask(){if(!currentTask)return;try{await api(`/api/tasks/${currentTask.id}/cancel`,{method:'POST'})}catch(e){alert(e.message)}}
-async function resumeTask(id){try{const t=await api(`/api/tasks/${id}/resume`,{method:'POST'});await showTask(t);refreshHistory()}catch(e){alert(e.message)}}
+if(currentTask&&['running','queued'].includes(currentTask.status)){
+ if(isStopRequest(text)){requestCancelTask(text);return}
+ renderChatMessage({role:'user',content:text});$('prompt').value='';showQuestion(null);clearChoices();try{await api(`/api/tasks/${currentTask.id}/messages`,{method:'POST',body:{message:text}})}catch(e){$('feed').append(el('div','ev bad',e.message))}return
+}
+const button=$('runBtn');button.disabled=true;const attachmentIds=[...new Set(pendingUploadIds)].slice(-4);pendingUploadIds.splice(0);renderAttachments();renderChatMessage({role:'user',content:text+(attachmentIds.length?'\n📎 attachment(s) included':'')});$('prompt').value='';historyView=false;selectedTaskId=null;updateTaskHeader(null,false);
+try{const result=await api(`/api/projects/${selected.id}/chat`,{method:'POST',body:{message:text,attachment_ids:attachmentIds,browser_session_id:browserSession?.id||null}});if(result.plan?.requires_plan)renderPlan(result.plan);renderChatMessage(result.assistant);if(result.kind==='task'){currentTask=result.task;selectedTaskId=result.task.id;updateTaskHeader(result.task,false);lastEventId=null;setRunning(true,result.task.started_at);openStream(result.task.id);refreshHistory()}else{$('feed').scrollTop=$('feed').scrollHeight}}
+catch(e){$('feed').append(el('div','ev bad',e.message))}finally{button.disabled=false}}
+async function cancelTask(){requestCancelTask()}
+async function resumeTask(id){try{await api(`/api/tasks/${id}/resume`,{method:'POST'});await showTask(id,false);refreshHistory()}catch(e){alert(e.message)}}
 function closeStream(){if(es){es.close();es=null}}
 function openStream(id){closeStream();const q=lastEventId?`?last_event_id=${encodeURIComponent(lastEventId)}`:'';es=new EventSource(`/api/tasks/${id}/events${q}`);es.onmessage=m=>{const ev=JSON.parse(m.data);if(ev.id===lastEventId)return;render(ev);if(['task.succeeded','task.failed','task.cancelled'].includes(ev.type)){closeStream();finishTask()}};es.onerror=async()=>{try{const t=await api(`/api/tasks/${id}`);if(!['running','queued'].includes(t.status)){closeStream();finishTask()}}catch(e){}}}
-async function finishTask(){setRunning(false);showQuestion(null);refreshHistory();refreshProject();if(currentTask)currentTask=await api(`/api/tasks/${currentTask.id}`).catch(()=>currentTask);const messages=selected?await api(`/api/projects/${selected.id}/chat`).catch(()=>[]):[];const last=messages[messages.length-1];if(last&&last.role==='assistant')renderChatMessage(last,processingPanel);if($('paneEvidence').style.display!=='none')loadEvidence();$('feed').scrollTop=$('feed').scrollHeight}
-function showQuestion(q){$('questionBox').style.display=q?'block':'none';if(!q)clearChoices();$('questionText').textContent=q||'';if(q){$('prompt').placeholder='Type your answer to the agent…';$('prompt').focus()}else $('prompt').placeholder='Ask anything, or tell OpenManus what to build or change…'}
+async function finishTask(){setRunning(false);showQuestion(null);clearChoices();refreshHistory();refreshProject();if(currentTask)currentTask=await api(`/api/tasks/${currentTask.id}`).catch(()=>currentTask);updateTaskHeader(currentTask,historyView);const messages=selected?await api(`/api/projects/${selected.id}/chat`).catch(()=>[]):[];const last=messages[messages.length-1];if(last&&last.role==='assistant')renderChatMessage(last,processingPanel);if($('paneEvidence').style.display!=='none')loadEvidence();if($('paneCheckpoints').style.display!=='none')loadCheckpoints();$('feed').scrollTop=$('feed').scrollHeight}
+function showQuestion(q){$('questionBox').style.display=q?'block':'none';if(!q)clearChoices();$('questionText').textContent=q||'';if(q){$('prompt').placeholder='Type your answer to the agent…';$('prompt').focus();renderChoices(q)}else $('prompt').placeholder='Ask anything, or tell OpenManus what to build or change…'}
 
 /* ---------------- event rendering ---------------- */
 function fmtArgs(tool,raw){let a;try{a=JSON.parse(raw||'{}')}catch(e){return raw||''}
@@ -409,5 +486,6 @@ function queueDroppedFiles(files){const input=$('uploadInput');if(!input||!files
 initWorkspaceLayout();loadStatus();loadProjects();
 </script>
 <div id="drawerBackdrop" onclick="closeDrawers()" aria-hidden="true"></div>
+<dialog id="cancelTaskDialog" aria-labelledby="cancelTaskTitle" aria-describedby="cancelTaskDescription"><div class="cancel-dialog-content"><h2 id="cancelTaskTitle">Stop this task?</h2><p id="cancelTaskDescription">The agent will stop at its next cancellation point. Changes already written to the workspace will remain; stopping does not roll them back.</p><div id="cancelTaskPrompt" class="cancel-dialog-task" hidden></div><div class="cancel-dialog-actions"><button type="button" onclick="dismissCancelTask()">Keep working</button><button type="button" class="danger" onclick="confirmCancelTask()">Stop task</button></div></div></dialog>
 </body>
 </html>
