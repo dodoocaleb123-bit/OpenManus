@@ -27,6 +27,13 @@ def test_web_client_contains_mermaid_renderer_and_image_budget_controls():
     assert "tabCode" in html
     assert "loadRepositoryMap" in html
     assert "Was this result useful?" in html
+    assert "tabTerminal" in html
+    assert "tabDatabase" in html
+    assert "tabCheckpoints" in html
+    assert "renderChoices" in html
+    assert "loadCheckpoints" in html
+    assert "appendTerminal" in html
+    assert "uploadedPreviews" in html
     routes = Path("app/api/routes.py").read_text(encoding="utf-8")
     assert "PLATFORM_IMAGE_MAX_TOKENS" in routes
     assert "solve every visible subquestion" in routes
