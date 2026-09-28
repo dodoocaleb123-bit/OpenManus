@@ -351,7 +351,7 @@ class AgentOrchestrator:
             conversation = "\n".join(f"{item.role.upper()}: {item.content}" for item in history)
             conversation = conversation[-30000:]
             reasoning_plan: dict[str, Any] | None = None
-            if reasoning_enabled() and should_reason(task.prompt, complexity=_task_complexity(task.prompt, bool(task.browser_session_id))) and "reasoning" in config.llm:
+            if not research_only and reasoning_enabled() and should_reason(task.prompt, complexity=_task_complexity(task.prompt, bool(task.browser_session_id))) and "reasoning" in config.llm:
                 try:
                     reasoning_llm = LLM(config_name="reasoning")
                     await emit("reasoning.started", "Creating a selective reasoning plan before execution", {"model": reasoning_llm.model})
