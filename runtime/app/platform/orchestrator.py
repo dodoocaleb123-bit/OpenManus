@@ -309,9 +309,19 @@ class AgentOrchestrator:
             project = self.store.get_project(task.project_id)
             if not project:
                 raise RuntimeError("Project no longer exists")
+            project_policy = self.store.get_project_policy(task.project_id)["policy"]
+            if not project_policy.get("enabled", True):
+                raise RuntimeError("This project is disabled by its project policy")
+            task.evidence["policy"] = {key: project_policy[key] for key in ("max_steps", "max_tool_calls", "max_repair_cycles", "allow_external_network") if key in project_policy}
+            tool_call_count = 0
             artifact_baseline = workspace_baseline(project.workspace)
             async def emit(type_: str, message: str, data: dict) -> None:
+                nonlocal tool_call_count
                 task.last_heartbeat = datetime.now(timezone.utc)
+                if type_ == "agent.tool_call":
+                    tool_call_count += 1
+                    if tool_call_count > int(project_policy.get("max_tool_calls", 120)):
+                        raise RuntimeError(f"Project policy tool-call budget exceeded ({project_policy.get('max_tool_calls', 120)})")
                 if type_ == "assistant.delta" and task.first_token_ms is None:
                     task.first_token_ms = _task_response_time_ms(task)
                     data = dict(data)
@@ -396,6 +406,7 @@ class AgentOrchestrator:
                 project=project, task=task, emit=emit, inbox=inbox,
                 ask=lambda q: self._ask(task, q), extra_tools=extra_tools,
             )
+            agent.max_steps = min(int(getattr(agent, "max_steps", _task_step_budget(task.prompt, bool(task.browser_session_id)))), int(project_policy.get("max_steps", 40)))
 
             await emit(
                 "agent.running",
@@ -403,7 +414,7 @@ class AgentOrchestrator:
                 {"research_only": research_only},
             )
             loop = CodingLoop(project.workspace)
-            max_cycles = loop.max_repair_cycles
+            max_cycles = min(loop.max_repair_cycles, int(project_policy.get("max_repair_cycles", loop.max_repair_cycles)))
             agent.current_step = 0
             max_steps = getattr(agent, "max_steps", 40)
             await emit("agent.step", f"Step 1/{max_steps}: preparing the first model request", {"step": 1, "preflight": True})

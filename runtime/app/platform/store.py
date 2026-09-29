@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sqlite3
 from collections import defaultdict
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from app.platform.models import ChatMessage, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus, UploadedFile
+from app.platform.phase_d import DEFAULT_POLICY, capability_registry, normalize_policy, validate_plugin_manifest
 
 
 class PlatformStore:
@@ -126,6 +128,28 @@ class PlatformStore:
                     FOREIGN KEY(task_id) REFERENCES tasks(id),
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
+                CREATE TABLE IF NOT EXISTS model_capabilities (
+                    model TEXT PRIMARY KEY, provider TEXT NOT NULL, capabilities TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT 'builtin', updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS plugins (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, version TEXT NOT NULL,
+                    manifest TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS project_policies (
+                    project_id TEXT PRIMARY KEY, policy TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+                CREATE TABLE IF NOT EXISTS project_memberships (
+                    project_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL,
+                    created_at TEXT NOT NULL, PRIMARY KEY(project_id,user_id),
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+                CREATE TABLE IF NOT EXISTS trajectory_evaluations (
+                    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                    score REAL NOT NULL, success INTEGER NOT NULL, signals TEXT NOT NULL, created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id), FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -153,6 +177,12 @@ class PlatformStore:
                 db.execute("ALTER TABLE chat_messages ADD COLUMN task_id TEXT")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS idx_chat_task ON chat_messages(task_id,created_at) WHERE task_id IS NOT NULL")
+            for profile in capability_registry():
+                db.execute(
+                    "INSERT INTO model_capabilities(model,provider,capabilities,enabled,source,updated_at) VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(model) DO UPDATE SET provider=excluded.provider, capabilities=excluded.capabilities, source=excluded.source, updated_at=excluded.updated_at",
+                    (profile["model"], profile.get("provider", "unknown"), json.dumps(profile), 1, profile.get("source", "builtin"), datetime.now(timezone.utc).isoformat()),
+                )
 
     @staticmethod
     def _dt(value: str | None) -> datetime | None:
@@ -234,6 +264,9 @@ class PlatformStore:
                 "INSERT INTO projects(id,name,workspace,repository,branch,git_ready,created_at) VALUES(?,?,?,?,?,?,?)",
                 (project.id, project.name, project.workspace, project.repository, project.branch, int(project.git_ready), project.created_at.isoformat()),
             )
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute("INSERT OR IGNORE INTO project_policies(project_id,policy,updated_at) VALUES(?,?,?)", (project.id, json.dumps(DEFAULT_POLICY), now))
+            db.execute("INSERT OR IGNORE INTO project_memberships(project_id,user_id,role,created_at) VALUES(?,?,?,?)", (project.id, os.environ.get("PLATFORM_USERNAME", "admin"), "owner", now))
         return project
 
     def update_project(self, project: Project) -> Project:
@@ -425,6 +458,83 @@ class PlatformStore:
         with self._connect() as db:
             row = db.execute("SELECT * FROM uploaded_files WHERE id=?", (file_id,)).fetchone()
         return self._uploaded_file(row) if row else None
+
+    # --------------------------------------------------------------- Phase D
+    def list_model_capabilities(self) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("SELECT model,provider,capabilities,enabled,source,updated_at FROM model_capabilities ORDER BY model").fetchall()
+        return [{"model": row["model"], "provider": row["provider"], **json.loads(row["capabilities"]), "enabled": bool(row["enabled"]), "source": row["source"], "updated_at": row["updated_at"]} for row in rows]
+
+    def upsert_model_capability(self, profile: dict) -> dict:
+        model = str(profile.get("model", "")).strip()
+        if not model or len(model) > 160:
+            raise ValueError("A model name is required")
+        now = datetime.now(timezone.utc).isoformat()
+        record = {**profile, "model": model}
+        with self._connect() as db:
+            db.execute("INSERT INTO model_capabilities(model,provider,capabilities,enabled,source,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(model) DO UPDATE SET provider=excluded.provider,capabilities=excluded.capabilities,enabled=excluded.enabled,source=excluded.source,updated_at=excluded.updated_at", (model, record.get("provider", "unknown"), json.dumps(record), int(record.get("enabled", True)), record.get("source", "custom"), now))
+        return {**record, "updated_at": now}
+
+    def list_plugins(self) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("SELECT manifest,enabled FROM plugins ORDER BY name").fetchall()
+        return [{**json.loads(row["manifest"]), "enabled": bool(row["enabled"])} for row in rows]
+
+    def install_plugin_manifest(self, manifest: dict) -> dict:
+        record = validate_plugin_manifest(manifest)
+        with self._connect() as db:
+            db.execute("INSERT INTO plugins(id,name,version,manifest,enabled,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET version=excluded.version,manifest=excluded.manifest", (record["name"], record["name"], record["version"], json.dumps(record), int(record["enabled"]), record["created_at"]))
+        return record
+
+    def set_plugin_enabled(self, name: str, enabled: bool) -> dict | None:
+        with self._connect() as db:
+            db.execute("UPDATE plugins SET enabled=? WHERE name=?", (int(enabled), name))
+            row = db.execute("SELECT manifest,enabled FROM plugins WHERE name=?", (name,)).fetchone()
+        return {**json.loads(row["manifest"]), "enabled": bool(row["enabled"])} if row else None
+
+    def get_project_policy(self, project_id: str) -> dict:
+        with self._connect() as db:
+            row = db.execute("SELECT policy,updated_at FROM project_policies WHERE project_id=?", (project_id,)).fetchone()
+        return {"project_id": project_id, "policy": normalize_policy(json.loads(row["policy"]) if row else None), "updated_at": row["updated_at"] if row else None}
+
+    def set_project_policy(self, project_id: str, policy: dict) -> dict:
+        if not self.get_project(project_id):
+            raise KeyError(project_id)
+        normalized = normalize_policy(policy)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("INSERT INTO project_policies(project_id,policy,updated_at) VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET policy=excluded.policy,updated_at=excluded.updated_at", (project_id, json.dumps(normalized), now))
+        return {"project_id": project_id, "policy": normalized, "updated_at": now}
+
+    def get_project_role(self, project_id: str, user_id: str) -> str | None:
+        with self._connect() as db:
+            row = db.execute("SELECT role FROM project_memberships WHERE project_id=? AND user_id=?", (project_id, user_id)).fetchone()
+        return row["role"] if row else None
+
+    def list_project_members(self, project_id: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("SELECT project_id,user_id,role,created_at FROM project_memberships WHERE project_id=? ORDER BY user_id", (project_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_project_member(self, project_id: str, user_id: str, role: str) -> dict:
+        if role not in {"viewer", "editor", "owner"}:
+            raise ValueError("Role must be viewer, editor, or owner")
+        if not self.get_project(project_id):
+            raise KeyError(project_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("INSERT INTO project_memberships(project_id,user_id,role,created_at) VALUES(?,?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role", (project_id, user_id.strip(), role, now))
+        return {"project_id": project_id, "user_id": user_id.strip(), "role": role, "created_at": now}
+
+    def save_trajectory_evaluation(self, evaluation: dict) -> dict:
+        with self._connect() as db:
+            db.execute("INSERT OR REPLACE INTO trajectory_evaluations(id,task_id,project_id,score,success,signals,created_at) VALUES(?,?,?,?,?,?,?)", (evaluation.get("id") or __import__("uuid").uuid4().hex[:12], evaluation["task_id"], evaluation["project_id"], evaluation["score"], int(evaluation["success"]), json.dumps(evaluation.get("signals", {})), evaluation["evaluated_at"]))
+        return evaluation
+
+    def list_trajectory_evaluations(self, project_id: str, limit: int = 50) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM trajectory_evaluations WHERE project_id=? ORDER BY created_at DESC LIMIT ?", (project_id, max(1, min(int(limit), 200)))).fetchall()
+        return [{"id": row["id"], "task_id": row["task_id"], "project_id": row["project_id"], "score": row["score"], "success": bool(row["success"]), "signals": json.loads(row["signals"]), "created_at": row["created_at"]} for row in rows]
 
     async def save_task(self, task: Task) -> None:
         async with self._lock:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -90,7 +91,16 @@ def create_app(
         raise RuntimeError("PLATFORM_REQUIRE_AUTH is enabled but PLATFORM_PASSWORD is not configured")
     if password:
         username = username or os.environ.get("PLATFORM_USERNAME") or "admin"
-        application.add_middleware(BasicAuthMiddleware, username=username, password=password)
+        users = {}
+        raw_users = os.environ.get("PLATFORM_USERS_JSON", "").strip()
+        if raw_users:
+            try:
+                parsed = json.loads(raw_users)
+                if isinstance(parsed, dict):
+                    users = {str(user): str(secret) for user, secret in parsed.items() if str(user).strip() and str(secret)}
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid PLATFORM_USERS_JSON; use a JSON object of username/password pairs")
+        application.add_middleware(BasicAuthMiddleware, username=username, password=password, users=users)
 
     @application.middleware("http")
     async def security_headers(request, call_next):

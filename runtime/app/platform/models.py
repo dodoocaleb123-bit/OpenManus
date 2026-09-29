@@ -34,6 +34,53 @@ class Project(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ModelCapability(BaseModel):
+    model: str
+    provider: str = "unknown"
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    source: str = "builtin"
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PluginManifest(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    name: str
+    version: str
+    display_name: str
+    description: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+    homepage: str = ""
+    source: str = "local"
+    manifest_hash: str = ""
+    enabled: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectPolicy(BaseModel):
+    project_id: str
+    policy: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectMembership(BaseModel):
+    project_id: str
+    user_id: str
+    role: str = "viewer"
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class TrajectoryEvaluation(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    task_id: str
+    project_id: str
+    score: float
+    success: bool
+    signals: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class Task(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
     project_id: str

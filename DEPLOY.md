@@ -445,3 +445,42 @@ playwright install chromium
 cp config/config.example.toml config/config.toml   # add your model + key
 python run_platform.py            # http://127.0.0.1:8000, no auth unless PLATFORM_PASSWORD is set
 ```
+
+
+## Phase D — Advanced platform features
+
+The Phase D foundation is available in the platform UI under **Plugins → Platform extensions** and through these APIs:
+
+- `GET /api/capabilities/models` — local-first model capability registry. It reports vision, tools, coding, planning, reasoning, and research capabilities without exposing API keys.
+- `PUT /api/capabilities/models` — owner-only custom capability profile update.
+- `GET /api/plugins` — installed declarative plugin manifests.
+- `POST /api/plugins` — owner-only manifest installation. Manifests are validated and disabled by default.
+- `POST /api/plugins/{name}/toggle` — owner-only enable/disable action.
+- `GET/PUT /api/projects/{project_id}/policy` — per-project budgets, allowed/blocked tools, domains, confirmation requirements, and network policy.
+- `GET/PUT /api/projects/{project_id}/members` — viewer/editor/owner project roles.
+- `GET /api/projects/{project_id}/evaluations` — saved trajectory evaluations.
+- `POST /api/tasks/{task_id}/evaluation` — deterministic evaluation of checkpoints, validation, artifacts, repair cycles, and user feedback.
+
+Important safety boundaries:
+
+- Phase D plugins are currently **declarative manifests only**. Installing a manifest does not execute downloaded code.
+- Plugin manifests requesting unrestricted shell execution, secret access, package installation, or arbitrary code execution are rejected.
+- New projects receive an owner membership and a safe default policy.
+- Project `viewer` members can inspect; `editor` members can start tasks; only `owner` members can change policies, memberships, model profiles, or plugins.
+- Policy budgets are enforced by the orchestrator for maximum steps, repair cycles, and tool calls.
+- Evaluation records are advisory and auditable. They do not automatically modify prompts, permissions, models, or tools from a single successful trajectory.
+
+For an existing deployment, no new secret variables are required. After pulling and rebuilding, project policies and Phase D records are stored in the existing persistent `platform.db` volume.
+
+
+### Optional team authentication
+
+The existing `PLATFORM_USERNAME` and `PLATFORM_PASSWORD` remain the owner account. For a small trusted team, add `PLATFORM_USERS_JSON` as a secret environment variable containing a JSON object of additional username/password pairs, for example:
+
+```env
+PLATFORM_USERNAME=admin
+PLATFORM_PASSWORD=replace-with-owner-password
+PLATFORM_USERS_JSON={"alice":"alice-password","bob":"bob-password"}
+```
+
+Each authenticated username is matched against its project membership. Use the Phase D **Team permissions** panel to assign `viewer`, `editor`, or `owner`. Do not commit this JSON to GitHub; configure it only in the local `.env` or deployment secret settings.

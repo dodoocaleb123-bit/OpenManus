@@ -31,6 +31,7 @@ from app.platform.llm_check import llm_problem, llm_status
 from app.platform.models import Event, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Task, TaskStatus, UploadedFile
 from app.platform.orchestrator import AgentOrchestrator, TaskNotRunning, _is_browser_research_task
 from app.platform.observability import PlatformObservability
+from app.platform.phase_d import evaluate_trajectory, role_allows, validate_plugin_manifest
 from app.platform.repository_map import build_repository_map
 from app.platform.sources import extract_sources
 from app.platform.store import PlatformStore
@@ -164,6 +165,30 @@ class PullRequestCreate(BaseModel):
     body: str = Field(default="", max_length=60000)
     base: str | None = Field(default=None, max_length=100)
     draft: bool = False
+
+
+class ModelCapabilityUpdate(BaseModel):
+    model: str = Field(min_length=1, max_length=160)
+    provider: str = Field(default="custom", max_length=80)
+    capabilities: dict = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class PluginInstall(BaseModel):
+    manifest: dict
+
+
+class PluginToggle(BaseModel):
+    enabled: bool
+
+
+class ProjectPolicyUpdate(BaseModel):
+    policy: dict = Field(default_factory=dict)
+
+
+class ProjectMemberUpdate(BaseModel):
+    user_id: str = Field(min_length=1, max_length=120)
+    role: str = Field(pattern="^(viewer|editor|owner)$")
 
 
 def is_build_request(text: str) -> bool:
@@ -413,6 +438,20 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             raise HTTPException(status_code=404, detail="Task not found")
         task.pending_question = orchestrator.pending_question(task_id)
         return task
+
+    def current_user(request: Request) -> str:
+        return str(request.scope.get("openmanus_user") or os.environ.get("PLATFORM_USERNAME") or "admin")
+
+    def require_role(project_id: str, request: Request, required: str) -> str:
+        user = current_user(request)
+        role = store.get_project_role(project_id, user)
+        # Local development and the configured platform account are owners.
+        if role is None and user == (os.environ.get("PLATFORM_USERNAME") or "admin"):
+            role = "owner"
+        if not role_allows(role, required):
+            raise HTTPException(status_code=403, detail=f"Project role '{role or 'none'}' cannot perform this action; required role: {required}.")
+        return role
+
     def require_confirmation(request: Request, action: str) -> None:
         """Require an explicit acknowledgement for irreversible API actions."""
         value = request.headers.get("x-openmanus-confirm", "").casefold()
@@ -450,6 +489,9 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         request_started = time.perf_counter()
         if not store.get_project(project_id):
             raise HTTPException(status_code=404, detail="Project not found")
+        project_policy = store.get_project_policy(project_id)["policy"]
+        if not project_policy.get("enabled", True):
+            raise HTTPException(status_code=423, detail="This project is disabled by its project policy.")
         replay = await replay_idempotent_task(project_id, prompt, execution_mode, idempotency_key)
         if replay:
             return replay
@@ -526,6 +568,95 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
     async def platform_metrics():
         """Return durable, redacted operational metrics for local administration."""
         return observability.snapshot(store)
+
+    # ----------------------------------------------------------- Phase D
+    @router.get("/capabilities/models")
+    async def model_capabilities():
+        return {"models": store.list_model_capabilities()}
+
+    @router.put("/capabilities/models")
+    async def update_model_capability(body: ModelCapabilityUpdate, request: Request):
+        if current_user(request) != (os.environ.get("PLATFORM_USERNAME") or "admin"):
+            raise HTTPException(status_code=403, detail="Only the platform owner can edit model capabilities")
+        return store.upsert_model_capability(body.model_dump())
+
+    @router.get("/plugins")
+    async def list_plugins():
+        return {"plugins": store.list_plugins(), "execution": "declarative manifests only; plugins do not execute arbitrary code"}
+
+    @router.post("/plugins")
+    async def install_plugin(body: PluginInstall, request: Request):
+        if current_user(request) != (os.environ.get("PLATFORM_USERNAME") or "admin"):
+            raise HTTPException(status_code=403, detail="Only the platform owner can install plugins")
+        try:
+            manifest = validate_plugin_manifest(body.manifest)
+            manifest["enabled"] = False
+            record = store.install_plugin_manifest(manifest)
+            audit("plugin.installed", name=record["name"], version=record["version"], manifest_hash=record["manifest_hash"])
+            return {"plugin": record, "requires_enable": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/plugins/{name}/toggle")
+    async def toggle_plugin(name: str, body: PluginToggle, request: Request):
+        if current_user(request) != (os.environ.get("PLATFORM_USERNAME") or "admin"):
+            raise HTTPException(status_code=403, detail="Only the platform owner can enable plugins")
+        plugin = store.set_plugin_enabled(name, body.enabled)
+        if not plugin:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+        audit("plugin.toggled", name=name, enabled=body.enabled, manifest_hash=plugin.get("manifest_hash"))
+        return plugin
+
+    @router.get("/projects/{project_id}/policy")
+    async def get_project_policy(project_id: str, request: Request):
+        project_or_404(project_id)
+        require_role(project_id, request, "viewer")
+        return store.get_project_policy(project_id)
+
+    @router.put("/projects/{project_id}/policy")
+    async def update_project_policy(project_id: str, body: ProjectPolicyUpdate, request: Request):
+        project_or_404(project_id)
+        require_role(project_id, request, "owner")
+        try:
+            return store.set_project_policy(project_id, body.policy)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/projects/{project_id}/members")
+    async def project_members(project_id: str, request: Request):
+        project_or_404(project_id)
+        require_role(project_id, request, "viewer")
+        return {"members": store.list_project_members(project_id)}
+
+    @router.put("/projects/{project_id}/members")
+    async def update_project_member(project_id: str, body: ProjectMemberUpdate, request: Request):
+        project_or_404(project_id)
+        require_role(project_id, request, "owner")
+        try:
+            return store.set_project_member(project_id, body.user_id, body.role)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/projects/{project_id}/evaluations")
+    async def project_evaluations(project_id: str, request: Request):
+        project_or_404(project_id)
+        require_role(project_id, request, "viewer")
+        return {"evaluations": store.list_trajectory_evaluations(project_id)}
+
+    @router.post("/tasks/{task_id}/evaluation")
+    async def evaluate_task_trajectory(task_id: str, request: Request):
+        task = task_or_404(task_id)
+        require_role(task.project_id, request, "viewer")
+        feedback = None
+        evaluations = store.list_trajectory_evaluations(task.project_id, 200)
+        for item in evaluations:
+            if item["task_id"] == task_id:
+                return item
+        feedback_rows = [item for item in store.list_checkpoints(task_id) if item.get("name") == "feedback"]
+        if feedback_rows:
+            feedback = feedback_rows[-1].get("data")
+        evaluation = evaluate_trajectory(task, store.list_checkpoints(task_id), feedback)
+        return store.save_trajectory_evaluation(evaluation)
 
     # ---------------------------------------------------------- projects
 
@@ -715,6 +846,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             if project_id in active_chat_streams:
                 raise HTTPException(status_code=409, detail="A reply is already streaming for this project.")
             if plan["requires_task"]:
+                require_role(project_id, request, "editor")
                 task, user_message, assistant_message = await launch_task(
                     project_id,
                     text,
@@ -1225,6 +1357,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
 
     @router.post("/tasks")
     async def create_task(body: TaskCreate, request: Request):
+        require_role(body.project_id, request, "editor")
         async with chat_lock(body.project_id):
             task, _, _ = await launch_task(
                 body.project_id,

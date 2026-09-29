@@ -27,13 +27,16 @@ class BasicAuthMiddleware:
         app: ASGIApp,
         username: str,
         password: str,
+        users: dict[str, str] | None = None,
         exempt_paths: Iterable[str] = ("/api/health",),
         realm: str = "OpenManus Platform",
     ) -> None:
         if not password:
             raise ValueError("BasicAuthMiddleware requires a non-empty password")
         self.app = app
-        self._expected = f"{username}:{password}".encode()
+        self.username = username
+        self._users = dict(users or {})
+        self._users.setdefault(username, password)
         self.exempt_paths = frozenset(exempt_paths)
         self.realm = realm
 
@@ -47,7 +50,15 @@ class BasicAuthMiddleware:
                     decoded = base64.b64decode(credentials.strip(), validate=True)
                 except (ValueError, TypeError):
                     return False
-                return secrets.compare_digest(decoded, self._expected)
+                try:
+                    supplied_user, supplied_password = decoded.decode("utf-8").split(":", 1)
+                except (UnicodeDecodeError, ValueError):
+                    return False
+                expected_password = self._users.get(supplied_user)
+                authorized = expected_password is not None and secrets.compare_digest(supplied_password, expected_password)
+                if authorized:
+                    scope["openmanus_user"] = supplied_user
+                return authorized
         return False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
