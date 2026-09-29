@@ -296,7 +296,11 @@ PROJECT
 - Current branch: {branch}
 
 TOOLS
-- bash: persistent shell in the workspace (Node.js/npm, Python 3, git; project .venv first on PATH).
+- bash: the persistent project terminal inside the OpenManus Docker container (Node.js/npm, Python 3,
+  git; project .venv first on PATH). Use it freely to build, test, install project dependencies, and
+  start local servers. It is not the Windows host PowerShell: translate simple PowerShell commands to
+  POSIX equivalents when working on the project, and never claim to have run a host command unless a
+  separately configured host bridge exists.
 - python_execute: run a Python script in the workspace.
 - str_replace_editor: view/create/edit files (relative paths resolve against the workspace).
 - platform_browser: the project's shared browser. The user watches it live and may take over.

@@ -70,6 +70,9 @@ def test_phase_c_routes_and_process_manager(tmp_path, monkeypatch):
     assert process.status_code == 200
     process_id = process.json()["id"]
     assert client.get(f"/api/processes/{process_id}").status_code == 200
+    terminal = client.post(f"/api/projects/{project_id}/terminal", json={"command": "printf terminal-ok"})
+    assert terminal.status_code == 200
+    assert "terminal-ok" in terminal.json()["output"]
     connector = client.post(f"/api/projects/{project_id}/connectors", json={"name": "test", "endpoint": "https://example.com/hook", "secret": "x" * 32})
     assert connector.status_code == 200
     connector_id = connector.json()["id"]

@@ -18,6 +18,7 @@ from app.platform.browser import BrowserManager
 from app.platform.browser_api import build_browser_router
 from app.platform.store import PlatformStore
 from app.platform.automation import AutomationRunner, AutomationStore, ProcessManager
+from app.platform.terminal import ProjectTerminalManager
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -45,6 +46,7 @@ def create_app(
     orchestrator = AgentOrchestrator(store, browsers, agent_factory=agent_factory, check_llm=check_llm)
     automation = AutomationStore(store.db_path)
     processes = ProcessManager(automation)
+    terminals = ProjectTerminalManager()
 
     async def _launch_scheduled(project_id: str, prompt: str):
         task = store.create_task(project_id, prompt, execution_mode="implement")
@@ -69,6 +71,7 @@ def create_app(
         recovery.cancel()
         await scheduler.stop()
         await processes.shutdown()
+        await terminals.close_all()
         await orchestrator.shutdown()
         await browsers.close_all()
 
@@ -78,7 +81,8 @@ def create_app(
     application.state.browsers = browsers
     application.state.automation = automation
     application.state.processes = processes
-    application.include_router(build_router(store, orchestrator, automation, processes))
+    application.state.terminals = terminals
+    application.include_router(build_router(store, orchestrator, automation, processes, terminals))
     application.include_router(build_browser_router(store, browsers))
     application.mount("/static", StaticFiles(directory=WEB), name="static")
 

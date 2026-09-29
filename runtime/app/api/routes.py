@@ -36,6 +36,7 @@ from app.platform.repository_map import build_repository_map
 from app.platform.sources import extract_sources
 from app.platform.store import PlatformStore
 from app.platform.automation import AutomationStore, ProcessManager, parse_preview_command, verify_webhook, wait_for_port
+from app.platform.terminal import ProjectTerminalManager
 from app.platform.parallel_research import parallel_research
 from app.platform.specialists import select_specialists
 
@@ -118,6 +119,10 @@ class ScheduleCreate(BaseModel):
 
 class ProcessStart(BaseModel):
     command: list[str] = Field(min_length=1, max_length=32)
+
+
+class TerminalCommand(BaseModel):
+    command: str = Field(min_length=1, max_length=20000)
 
 
 class PreviewStart(BaseModel):
@@ -409,13 +414,14 @@ async def sse_event_stream(
             yield ": ping\n\n"
 
 
-def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automation_store: AutomationStore | None = None, process_manager: ProcessManager | None = None) -> APIRouter:
+def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automation_store: AutomationStore | None = None, process_manager: ProcessManager | None = None, terminal_manager: ProjectTerminalManager | None = None) -> APIRouter:
     router = APIRouter(prefix="/api")
     chat_locks: dict[str, asyncio.Lock] = {}
     active_chat_streams: set[str] = set()
     observability = PlatformObservability(store.root)
     automation = automation_store or AutomationStore(store.db_path)
     processes = process_manager or ProcessManager()
+    terminals = terminal_manager or ProjectTerminalManager()
 
     def audit(action: str, **data: object) -> None:
         """Write a small redacted audit record; never include prompts or secrets."""
@@ -1330,6 +1336,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         try:
             return await processes.start(process_id, body.command, Path(project.workspace), project_id=project_id)
         except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/projects/{project_id}/terminal")
+    async def execute_project_terminal(project_id: str, body: TerminalCommand):
+        project = project_or_404(project_id)
+        try:
+            result = await terminals.execute(project_id, Path(project.workspace), body.command)
+            audit("terminal.command", project_id=project_id)
+            return result
+        except (OSError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/projects/{project_id}/preview")
