@@ -347,6 +347,16 @@ def math_problem_is_missing(text: str) -> bool:
     """Detect a request to solve math without a current problem to solve."""
     if not is_math_request(text) or not _MATH_ACTIONS.search(text):
         return False
+    # Only stop truly generic requests such as “answer a mathematics
+    # question.” Specific domains, attached-image references, and named
+    # objects should still be sent to the model for interpretation.
+    generic_math_question = re.search(
+        r"\b(?:a|the|this|my)\s+(?:math|mathematics)\s+(?:question|problem)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not generic_math_question:
+        return False
     has_numeric_or_expression = bool(re.search(r"\d|[=+\-*/^√∫]|\b(?:triangle|equation|integral|derivative|fraction|quadratic|probability|matrix|function)\b", text, re.IGNORECASE))
     return not has_numeric_or_expression
 
@@ -1022,7 +1032,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                     "Never invent a problem, reuse a prior solution, or default to geometry or the Pythagorean theorem. "
                     "Use the Pythagorean theorem only when the current problem explicitly establishes a right triangle and "
                     "the relevant sides. If the current message does not contain a complete problem, ask for it instead of guessing. "
-                    "After that analysis, follow a polished tutoring style. Start with a brief, friendly sentence "
+                    "After that analysis, follow this exact polished tutoring style. Start with a brief, friendly sentence "
                     "such as 'Absolutely! Let’s solve it step by step.' Use a '### Given:' heading only when there are actual givens, followed by "
                     "the original problem in a displayed $$...$$ equation when that format is appropriate. Use '### Step 1:', '### Step 2:', and so on, "
                     "with a blank line and '---' between major steps. Explain each step in bold where helpful, and put "

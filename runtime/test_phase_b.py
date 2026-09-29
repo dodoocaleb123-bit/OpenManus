@@ -39,3 +39,11 @@ def test_gui_has_no_request_mode_selector():
     assert 'id="executionMode"' not in html
     assert "Request mode" not in html
     assert "mode:selectedMode" not in html
+
+
+def test_gui_has_compact_chat_loading_indicator():
+    html = Path(__file__).parent.joinpath("web/index.html").read_text(encoding="utf-8")
+    assert "chat-loading-spinner" in html
+    assert "Open Manus" in html
+    assert "showChatLoading()" in html
+    assert "clearChatReplyState()" in html
