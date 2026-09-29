@@ -68,6 +68,8 @@ class PlatformStore:
                     recovery TEXT,
                     idempotency_key TEXT,
                     last_heartbeat TEXT,
+                    execution_mode TEXT NOT NULL DEFAULT 'implement',
+                    first_token_ms INTEGER,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
                 CREATE TABLE IF NOT EXISTS events (
@@ -86,6 +88,8 @@ class PlatformStore:
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     response_time_ms INTEGER,
+                    time_to_first_token_ms INTEGER,
+                    task_id TEXT,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
                 CREATE TABLE IF NOT EXISTS uploaded_files (
@@ -108,6 +112,20 @@ class PlatformStore:
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_checkpoints_task ON task_checkpoints(task_id, created_at);
+                CREATE TABLE IF NOT EXISTS project_memory (
+                    project_id TEXT PRIMARY KEY,
+                    content TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+                CREATE TABLE IF NOT EXISTS task_feedback (
+                    task_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id),
+                    FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -122,9 +140,19 @@ class PlatformStore:
             for name, definition in (("evidence", "TEXT"), ("artifacts", "TEXT"), ("recovery", "TEXT"), ("idempotency_key", "TEXT"), ("last_heartbeat", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+            if "execution_mode" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'implement'")
+            if "first_token_ms" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN first_token_ms INTEGER")
             chat_columns = {row[1] for row in db.execute("PRAGMA table_info(chat_messages)").fetchall()}
             if "response_time_ms" not in chat_columns:
                 db.execute("ALTER TABLE chat_messages ADD COLUMN response_time_ms INTEGER")
+            if "time_to_first_token_ms" not in chat_columns:
+                db.execute("ALTER TABLE chat_messages ADD COLUMN time_to_first_token_ms INTEGER")
+            if "task_id" not in chat_columns:
+                db.execute("ALTER TABLE chat_messages ADD COLUMN task_id TEXT")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_chat_task ON chat_messages(task_id,created_at) WHERE task_id IS NOT NULL")
 
     @staticmethod
     def _dt(value: str | None) -> datetime | None:
@@ -154,6 +182,8 @@ class PlatformStore:
             recovery=json.loads(row["recovery"]) if "recovery" in row.keys() and row["recovery"] else {},
             idempotency_key=row["idempotency_key"] if "idempotency_key" in row.keys() else None,
             last_heartbeat=PlatformStore._dt(row["last_heartbeat"]) if "last_heartbeat" in row.keys() else None,
+            execution_mode=row["execution_mode"] if "execution_mode" in row.keys() else "implement",
+            first_token_ms=row["first_token_ms"] if "first_token_ms" in row.keys() else None,
         )
 
     @staticmethod
@@ -183,6 +213,11 @@ class PlatformStore:
     def get_task(self, task_id: str) -> Task | None:
         with self._connect() as db:
             row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._task(row) if row else None
+
+    def get_task_by_idempotency_key(self, project_id: str, key: str) -> Task | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM tasks WHERE project_id=? AND idempotency_key=?", (project_id, key)).fetchone()
         return self._task(row) if row else None
 
     def create_project(self, name: str, repository: str | None = None, branch: str | None = None) -> Project:
@@ -221,6 +256,7 @@ class PlatformStore:
         with self._connect() as db:
             db.execute("DELETE FROM events WHERE task_id=?", (task_id,))
             db.execute("DELETE FROM task_checkpoints WHERE task_id=?", (task_id,))
+            db.execute("DELETE FROM task_feedback WHERE task_id=?", (task_id,))
             result = db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         return result.rowcount > 0
 
@@ -231,19 +267,23 @@ class PlatformStore:
                 return None
             db.execute("DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?)", (project_id,))
             db.execute("DELETE FROM task_checkpoints WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?)", (project_id,))
+            db.execute("DELETE FROM task_feedback WHERE project_id=?", (project_id,))
             db.execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
             db.execute("DELETE FROM uploaded_files WHERE project_id=?", (project_id,))
             db.execute("DELETE FROM chat_messages WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM project_memory WHERE project_id=?", (project_id,))
             db.execute("DELETE FROM projects WHERE id=?", (project_id,))
         return row["workspace"]
 
-    def create_task(self, project_id: str, prompt: str) -> Task:
+    def create_task(self, project_id: str, prompt: str, execution_mode: str = "implement", idempotency_key: str | None = None) -> Task:
         if not self.get_project(project_id):
             raise KeyError(f"Unknown project: {project_id}")
-        task = Task(project_id=project_id, prompt=prompt)
+        if execution_mode not in {"implement", "inspect"}:
+            raise ValueError("Task execution mode must be implement or inspect")
+        task = Task(project_id=project_id, prompt=prompt, execution_mode=execution_mode, idempotency_key=idempotency_key)
         with self._connect() as db:
-            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan,evidence,artifacts,recovery,idempotency_key,last_heartbeat) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None))
+            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan,evidence,artifacts,recovery,idempotency_key,last_heartbeat,execution_mode,first_token_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.execution_mode, task.first_token_ms))
         return task
 
     @staticmethod
@@ -252,21 +292,104 @@ class PlatformStore:
             id=row["id"], project_id=row["project_id"], role=row["role"],
             content=row["content"], created_at=PlatformStore._dt(row["created_at"]),
             response_time_ms=row["response_time_ms"] if "response_time_ms" in row.keys() else None,
+            time_to_first_token_ms=row["time_to_first_token_ms"] if "time_to_first_token_ms" in row.keys() else None,
+            task_id=row["task_id"] if "task_id" in row.keys() else None,
         )
 
-    def add_chat_message(self, project_id: str, role: str, content: str, response_time_ms: int | None = None) -> ChatMessage:
+    def add_chat_message(self, project_id: str, role: str, content: str, response_time_ms: int | None = None, time_to_first_token_ms: int | None = None, task_id: str | None = None) -> ChatMessage:
         if not self.get_project(project_id):
             raise KeyError(f"Unknown project: {project_id}")
         if role not in {"user", "assistant", "system"}:
             raise ValueError("Chat message role must be user, assistant, or system")
         response_time_ms = max(0, int(response_time_ms)) if response_time_ms is not None else None
-        message = ChatMessage(project_id=project_id, role=role, content=content, response_time_ms=response_time_ms)
+        time_to_first_token_ms = max(0, int(time_to_first_token_ms)) if time_to_first_token_ms is not None else None
+        if task_id is not None:
+            task = self.get_task(task_id)
+            if not task or task.project_id != project_id:
+                raise KeyError(f"Unknown task for project: {task_id}")
+        message = ChatMessage(project_id=project_id, role=role, content=content, task_id=task_id, response_time_ms=response_time_ms, time_to_first_token_ms=time_to_first_token_ms)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO chat_messages(id,project_id,role,content,created_at,response_time_ms) VALUES(?,?,?,?,?,?)",
-                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat(), message.response_time_ms),
+                "INSERT INTO chat_messages(id,project_id,role,content,created_at,response_time_ms,time_to_first_token_ms,task_id) VALUES(?,?,?,?,?,?,?,?)",
+                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat(), message.response_time_ms, message.time_to_first_token_ms, message.task_id),
             )
         return message
+
+    def get_project_memory(self, project_id: str) -> dict:
+        with self._connect() as db:
+            row = db.execute("SELECT content,updated_at FROM project_memory WHERE project_id=?", (project_id,)).fetchone()
+        return {"project_id": project_id, "content": row["content"], "updated_at": row["updated_at"]} if row else {"project_id": project_id, "content": "", "updated_at": None}
+
+    def set_project_memory(self, project_id: str, content: str) -> dict:
+        if not self.get_project(project_id):
+            raise KeyError(f"Unknown project: {project_id}")
+        content = str(content).strip()
+        if len(content) > 6000:
+            raise ValueError("Project memory must be 6,000 characters or fewer")
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            if content:
+                db.execute(
+                    "INSERT INTO project_memory(project_id,content,updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(project_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
+                    (project_id, content, updated_at),
+                )
+            else:
+                db.execute("DELETE FROM project_memory WHERE project_id=?", (project_id,))
+        return {"project_id": project_id, "content": content, "updated_at": updated_at if content else None}
+
+    def set_task_feedback(self, task_id: str, rating: int) -> dict:
+        if rating not in {-1, 1}:
+            raise ValueError("Feedback rating must be -1 or 1")
+        task = self.get_task(task_id)
+        if not task:
+            raise KeyError(task_id)
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO task_feedback(task_id,project_id,rating,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(task_id) DO UPDATE SET rating=excluded.rating,created_at=excluded.created_at",
+                (task_id, task.project_id, rating, created_at),
+            )
+        return {"task_id": task_id, "rating": rating, "created_at": created_at}
+
+    def feedback_metrics(self) -> dict:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT COUNT(*) AS total, SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) AS helpful, "
+                "SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END) AS not_helpful FROM task_feedback"
+            ).fetchone()
+        total = int(row["total"] or 0)
+        helpful = int(row["helpful"] or 0)
+        return {
+            "rated_tasks": total,
+            "helpful": helpful,
+            "not_helpful": int(row["not_helpful"] or 0),
+            "helpful_rate": round(helpful / total, 4) if total else None,
+        }
+
+    def latency_metrics(self) -> dict:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT response_time_ms,time_to_first_token_ms FROM chat_messages "
+                "WHERE role='assistant' AND response_time_ms IS NOT NULL "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 500"
+            ).fetchall()
+        totals = [int(row["response_time_ms"]) for row in rows if row["response_time_ms"] is not None]
+        first = [int(row["time_to_first_token_ms"]) for row in rows if row["time_to_first_token_ms"] is not None]
+
+        def summarize(values: list[int]) -> dict:
+            if not values:
+                return {"samples": 0, "average_ms": None, "p95_ms": None}
+            ordered = sorted(values)
+            p95_index = max(0, min(len(ordered) - 1, (95 * len(ordered) + 99) // 100 - 1))
+            return {
+                "samples": len(values),
+                "average_ms": round(sum(values) / len(values)),
+                "p95_ms": ordered[p95_index],
+            }
+
+        return {"response_time": summarize(totals), "time_to_first_token": summarize(first)}
 
     def list_chat_messages(self, project_id: str, limit: int = 100) -> list[ChatMessage]:
         limit = max(1, min(int(limit), 500))
@@ -306,10 +429,10 @@ class PlatformStore:
     async def save_task(self, task: Task) -> None:
         async with self._lock:
             with self._connect() as db:
-                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=?, evidence=?, artifacts=?, recovery=?, idempotency_key=?, last_heartbeat=? WHERE id=?""",
+                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=?, evidence=?, artifacts=?, recovery=?, idempotency_key=?, last_heartbeat=?, execution_mode=?, first_token_ms=? WHERE id=?""",
                            (task.status.value, task.started_at.isoformat() if task.started_at else None,
                             task.finished_at.isoformat() if task.finished_at else None, task.result, task.error,
-                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.id))
+                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.execution_mode, task.first_token_ms, task.id))
 
     async def save_checkpoint(self, task_id: str, name: str, data: dict) -> None:
         from uuid import uuid4

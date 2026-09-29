@@ -227,11 +227,17 @@ def test_agent_git_tool_publishes_new_project(tmp_path, bare_remote, monkeypatch
     async def on_event(t, m, d):
         events.append((t, d))
 
-    tool = PlatformGitTool(store=store, project_id=project.id, on_event=on_event)
+    tool = PlatformGitTool(
+        store=store,
+        project_id=project.id,
+        on_event=on_event,
+        user_request="Publish a new private GitHub repository named sneaker-shop",
+    )
     result = run(tool.execute(action="publish_repository", repo_name="sneaker-shop"))
     assert result.error is None, result.error
     assert git("ls-tree", "-r", "--name-only", "main", cwd=bare_remote) == "index.html"
-    assert events and events[0][0] == "github.repository"
+    assert any(event_type == "github.action.approved" for event_type, _ in events)
+    assert any(event_type == "github.repository" for event_type, _ in events)
     assert store.get_project(project.id).git_ready
 
 

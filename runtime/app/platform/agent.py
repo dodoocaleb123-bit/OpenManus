@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -48,6 +49,18 @@ def _int_env(name: str, default: int, low: int, high: int) -> int:
 def _clip(text: Any, limit: int) -> str:
     s = text if isinstance(text, str) else str(text)
     return s if len(s) <= limit else s[:limit] + f"\n…[{len(s) - limit} more chars]"
+
+
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|client[_-]?secret|private[_-]?key)\b\s*[:=]\s*)(?:\"[^\"\n]*\"|'[^'\n]*'|[^,;\s}\n]+)"
+)
+_SECRET_TOKEN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b")
+
+
+def redact_sensitive_text(text: Any) -> str:
+    value = text if isinstance(text, str) else str(text)
+    value = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", value)
+    return _SECRET_TOKEN.sub("[REDACTED_TOKEN]", value)
 
 
 # --------------------------------------------------------------------- tools
@@ -130,7 +143,11 @@ class WorkspaceBash(Bash):
         if command is None:
             return CLIResult(error="no command provided.")
         result = await self._session.run(command)
-        result.evidence = {**getattr(result, "evidence", {}), "tool": self.name, "command": command}
+        for attribute in ("output", "error", "system"):
+            value = getattr(result, attribute, None)
+            if value:
+                setattr(result, attribute, redact_sensitive_text(value))
+        result.evidence = {**getattr(result, "evidence", {}), "tool": self.name, "command": redact_sensitive_text(command)}
         result.retryable = bool(getattr(result, "error", None))
         return result
 
@@ -181,7 +198,7 @@ class WorkspacePython(BaseTool):
                 pass
             await proc.wait()
             return ToolResult(error=f"Execution timed out after {timeout} seconds", evidence={"tool": self.name, "timeout": timeout}, retryable=True)
-        text = out.decode(errors="replace")
+        text = redact_sensitive_text(out.decode(errors="replace"))
         if proc.returncode != 0:
             return ToolResult(error=f"exit code {proc.returncode}\n{text}", evidence={"tool": self.name, "exit_code": proc.returncode}, retryable=False)
         return ToolResult(output=text or "(no output)", evidence={"tool": self.name, "exit_code": 0})
@@ -196,6 +213,10 @@ class WorkspaceEditor(StrReplaceEditor):
         p = Path(path)
         if not p.is_absolute():
             p = (self.workspace / p).resolve()
+        name = p.name.casefold()
+        sensitive = name == ".env" or (name.startswith(".env.") and not name.endswith((".example", ".sample", ".template"))) or name in {"id_rsa", "id_ed25519", "credentials.json", "secrets.json", "service-account.json"}
+        if sensitive:
+            return f"Access to secret-like configuration file {p.name} is blocked. Ask the user to manage credentials outside the agent workspace."
         if command == "create":
             # Make retries safe: local models often repeat a create call after a
             # transient/tool-text error. If the requested file already contains
@@ -211,7 +232,8 @@ class WorkspaceEditor(StrReplaceEditor):
             # The base editor can't create files in folders that don't exist yet
             # (e.g. src/app.py in a brand-new project).
             p.parent.mkdir(parents=True, exist_ok=True)
-        return await super().execute(command=command, path=str(p), **kwargs)
+        result = await super().execute(command=command, path=str(p), **kwargs)
+        return redact_sensitive_text(result)
 
 
 class PlatformAskHuman(BaseTool):

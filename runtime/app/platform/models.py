@@ -55,6 +55,8 @@ class Task(BaseModel):
     recovery: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: Optional[str] = None
     last_heartbeat: Optional[datetime] = None
+    execution_mode: str = "implement"
+    first_token_ms: Optional[int] = None
     # Live-only (not persisted): question the agent is waiting on the user to answer.
     pending_question: Optional[str] = None
 
@@ -64,8 +66,10 @@ class ChatMessage(BaseModel):
     project_id: str
     role: str
     content: str
+    task_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     response_time_ms: Optional[int] = None
+    time_to_first_token_ms: Optional[int] = None
 
 
 class UploadedFile(BaseModel):

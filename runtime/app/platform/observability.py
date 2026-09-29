@@ -51,6 +51,8 @@ class PlatformObservability:
                 "passed": sum(value is True for value in validated),
                 "failed": sum(value is False for value in validated),
             },
+            "latency": store.latency_metrics(),
+            "feedback": store.feedback_metrics(),
             "audit_actions": self._audit_counts(),
             "limits": {
                 "single_node": True,

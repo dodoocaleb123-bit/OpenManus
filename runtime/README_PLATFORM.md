@@ -14,17 +14,23 @@ including display equations, fractions, aligned systems, superscripts, and
 common AMS constructs. MathJax is loaded by the web client; if the CDN is
 unavailable, the original formula text remains visible as a fallback.
 
-Each project now has one persistent assistant composer with an action selector:
+Each project has one persistent conversation composer with explicit request modes:
 
-- **Discuss** answers questions without changing project files.
-- Discuss mode receives a bounded, read-only snapshot of the project tree and
-  common architecture files such as README, package manifests, Dockerfiles,
-  and dependency files, so it can explain a cloned repository without a mode
-  switch. Secrets and generated directories are excluded.
-- **Inspect project** starts a read-only task that analyzes the repository and
-  reports findings without intentional edits, commits, or pushes.
-- **Make changes** starts the autonomous coding workflow for implementation,
-  testing, and project changes.
+- **Auto** chooses a response, read-only inspection, or implementation based on
+  the request. Project context is loaded only when the question is project-related.
+- **Answer only** does not load repository excerpts or start project tools.
+- **Inspect project** reads bounded, relevant local files and answers without
+  starting the build agent or intentionally changing project state.
+- **Plan only** returns a plan and risks without running tools or changing files.
+- **Implement & verify** starts the autonomous coding workflow for the requested
+  change and independent validation.
+
+The selector is saved in the browser. Bounded lexical retrieval prefers relevant
+source files and common project documentation; secret-like filenames, generated
+directories, and oversized content are excluded. A per-project Memory pane lets
+you save up to 6,000 characters of stable preferences and constraints in local
+SQLite. Credentials are rejected, and memory/file excerpts are treated as
+untrusted context rather than instructions.
 
 The paperclip button is in the lower-left of the composer. Selected uploads
 appear as attachment chips and are sent with the next Discuss message. For
@@ -42,10 +48,12 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
              └─ fail  ─▶ repair pass with the exact failing output (≤ AGENT_MAX_REPAIR_CYCLES)
 ```
 
-- **Workspace-scoped tools.** Every project has its own directory
-  (`workspace/projects/<id>`). Shell, Python and file edits are confined to it; each
-  command gets a timeout (`AGENT_COMMAND_TIMEOUT`) and an environment with API keys
-  and tokens removed.
+- **Project tools and guardrails.** Every project has its own workspace. Agent
+  processes start there, get command timeouts (`AGENT_COMMAND_TIMEOUT`), and use
+  an environment with platform credentials removed. Secret-like configuration
+  files are blocked in the file editor, and common credential assignments/tokens
+  are redacted from shell/Python results. This is defense in depth, not a
+  per-task operating-system sandbox.
 - **Independent validation.** The platform, not the agent, decides success. It
   detects Node (npm/yarn/pnpm), Python (pytest, project venv), Rust and Go projects,
   installs dependencies once per lockfile change, and runs tests/build.
@@ -57,11 +65,22 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
   (click on the live screenshot, type, press keys). Screenshots are passed to the
   model when it supports images.
 - **GitHub.** `platform_git` gives the agent status/diff/log/init/branch/commit/
-  push/pull-request/publish. The token stays server-side (a short-lived
-  `GIT_ASKPASS` helper), never in remotes or the agent's environment.
+  push/pull-request/publish. Push, pull-request, and repository-publish actions
+  require the user to ask for that action explicitly or approve it in the UI.
+  The token stays server-side (a short-lived `GIT_ASKPASS` helper), never in
+  remotes or the agent's environment.
 - **Durable.** Projects, tasks, events and checkpoints are in SQLite. After a
   restart, interrupted tasks are re-queued; the event stream resumes from
-  `Last-Event-ID`.
+  `Last-Event-ID`. Task-launch retries can include `Idempotency-Key`; replaying a
+  matching key returns the original task, while mismatched requests are rejected.
+- **Measured quality and speed.** Assistant replies persist total response time and
+  time-to-first-token when available. The Metrics pane and `GET /api/metrics` show
+  local response/TTFT aggregates, deterministic verification outcomes, and
+  task helpfulness feedback. Metrics are derived from local SQLite and are not
+  uploaded as telemetry.
+- **Task history.** Tasks can be filtered locally by text and status. A completed
+  task's saved reply retains its task association and feedback controls when
+  reopened.
 - **Project uploads.** The Files panel accepts common PDF, Word, spreadsheet,
   presentation, text, ZIP/archive, audio, video and image files. Uploads are
   stored under the project workspace, are visible to the Build agent, and are
@@ -75,12 +94,13 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 
 | Area | Endpoints |
 | --- | --- |
-| Status | `GET /api/health` (no auth), `GET /api/status` (model, GitHub, auth), `GET /api/metrics` (durable task/verification/recovery/audit summaries) |
+| Status | `GET /api/health` (no auth), `GET /api/status` (model, GitHub, auth), `GET /api/metrics` (task, verification, recovery, latency, feedback, and audit summaries) |
 | Projects | `POST/GET /api/projects`, `GET /api/projects/{id}`, `GET /api/projects/{id}/files` |
 | Repository intelligence | `GET /api/projects/{id}/repository-map` (bounded file/language/Python-symbol map) |
+| Project memory | `GET/PUT /api/projects/{id}/memory` (local-only; 6,000-character limit; credential-like values rejected) |
 | Uploads | `POST/GET /api/projects/{id}/uploads`, `GET /api/projects/{id}/uploads/{file_id}` |
-| Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent project conversation) |
-| Tasks | `POST /api/tasks` (`{project_id, prompt}`; 409 if one is running in that project), `GET /api/projects/{id}/tasks`, `GET /api/tasks/{id}`, `POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/messages` |
+| Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent conversation; `mode` may be `auto`, `answer`, `inspect`, `plan`, or `implement`) |
+| Tasks | `POST /api/tasks` (`{project_id, prompt}`; optional `Idempotency-Key` header), `GET /api/projects/{id}/tasks`, `GET /api/tasks/{id}`, `POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/messages`, `POST /api/tasks/{id}/feedback` (`{rating: 1|-1}`) |
 | Events | `GET /api/tasks/{id}/events` (SSE, resumable), `GET /api/tasks/{id}/events/history` |
 | Git | `GET /api/projects/{id}/git/status\|diff\|log`, `POST …/git/branch\|commit\|push` |
 | GitHub | `GET /api/github/user\|repos`, `POST /api/projects/{id}/github/connect\|pull-request\|publish` |
@@ -90,11 +110,12 @@ Event types streamed to the UI include `agent.thought`, `agent.tool_call`,
 `agent.tool_result`, `agent.question`, `human.reply`, `coding.validation`,
 `coding.repair`, `github.pull_request` and the `task.*` lifecycle events.
 
-Irreversible UI/API actions require the `X-OpenManus-Confirm: true` header after
-the client has shown the user the exact action: project deletion, build-history
-deletion, and repository publishing. The web UI supplies this header only after
-its confirmation dialog, so this is enforced at the backend rather than only in
-browser JavaScript.
+Project deletion, build-history deletion, repository publishing, Git push, and
+pull-request creation require the `X-OpenManus-Confirm: true` header on direct API
+calls. The web UI supplies it only from the corresponding user-triggered control;
+project/build deletion and repository publishing also show confirmation dialogs.
+The autonomous Git tool separately checks for an explicit matching request or
+asks the user through the task UI before push/PR/publish actions.
 
 ## Running locally
 
@@ -127,8 +148,9 @@ page are faked; git operations run against local bare repositories.
 ## Known limitations
 
 - The agent runs inside the platform container (no per-task sandbox yet). Keys
-  are scrubbed from its environment, but files in the container, including the
-  generated `config/config.toml`, are readable to it.
+  are scrubbed from its process environment, secret-like files are blocked from
+  the file-editor tool, and common values are redacted from tool output. The
+  container filesystem is not a security boundary against malicious project code.
 - Browser sessions live in the server process and are not restored after a restart.
 - Tasks in different projects may run concurrently unless
   `PLATFORM_MAX_CONCURRENT_TASKS` is set. The Render template sets this to `1`.

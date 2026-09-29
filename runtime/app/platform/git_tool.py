@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.platform.git import GitError
@@ -23,7 +24,8 @@ class PlatformGitTool(BaseTool):
         "- push: push the current branch to GitHub.\n"
         "- create_pull_request {title, body, base?, draft?}: pushes and opens a PR from the current branch.\n"
         "- publish_repository {repo_name, private?, description?}: create a NEW GitHub repository for a "
-        "project that has none, commit everything and push. Returns the repository URL."
+        "project that has none, commit everything and push. Returns the repository URL. External push/PR/publish "
+        "actions require the user to request them explicitly or approve through ask_human."
     )
     parameters: dict = {
         "type": "object",
@@ -53,6 +55,8 @@ class PlatformGitTool(BaseTool):
     store: Any = None
     project_id: str = ""
     on_event: Any = None  # async (type, message, data) -> None
+    user_request: str = ""
+    request_approval: Any = None  # async (question) -> user's reply
 
     class Config:
         arbitrary_types_allowed = True
@@ -67,11 +71,51 @@ class PlatformGitTool(BaseTool):
         if self.on_event is not None:
             await self.on_event(type_, message, data)
 
+    def _explicitly_requested(self, action: str) -> bool:
+        text = self.user_request.casefold()
+        action_words = {
+            "push": r"\bpush\b",
+            "create_pull_request": r"\b(?:create|open|submit|draft)\b.{0,40}\b(?:pull request|pr)\b|\b(?:pull request|pr)\b.{0,40}\b(?:create|open|submit)\b",
+            "publish_repository": r"\bpublish\b.{0,40}\b(?:github\s+)?(?:repo|repository)\b|\bcreate\b.{0,40}\b(?:github\s+)?(?:repo|repository)\b",
+        }
+        if not re.search(action_words.get(action, r"$^"), text):
+            return False
+        if self._explicitly_prohibited(action):
+            return False
+        return True
+
+    def _explicitly_prohibited(self, action: str) -> bool:
+        text = self.user_request.casefold()
+        label = {"push": r"push", "create_pull_request": r"(?:pull request|pr)", "publish_repository": r"publish|repository"}.get(action)
+        return bool(label and re.search(rf"\b(?:do\s+not|don't|never|avoid|without)\b[^.!?]{{0,80}}\b(?:{label})\b", text))
+
+    async def _approve_external_action(self, action: str, summary: str) -> str | None:
+        if self._explicitly_prohibited(action):
+            return "The user explicitly prohibited this GitHub action; no remote change was made."
+        source = "explicit_user_request" if self._explicitly_requested(action) else "user_approval"
+        if source == "user_approval":
+            if self.request_approval is None:
+                return "This external GitHub action needs explicit user approval before it can proceed."
+            answer = await self.request_approval(f"OpenManus requests approval to {summary}. Reply YES to approve, or anything else to cancel.")
+            if (answer or "").strip().casefold() not in {"yes", "approve", "approved", "confirm"}:
+                return "The user did not approve this external GitHub action; no remote change was made."
+        await self._notify("github.action.approved", f"Authorized GitHub action: {action}", {"action": action, "approval_source": source})
+        return None
+
     async def execute(self, **kwargs) -> ToolResult:
         action = kwargs.get("action")
         try:
             svc = self._service()
             git = svc.git
+            external_summaries = {
+                "push": "push the current branch and its committed changes to the connected GitHub repository",
+                "create_pull_request": "push the current branch and open the requested pull request",
+                "publish_repository": "create a GitHub repository and push this project to it",
+            }
+            if action in external_summaries:
+                denied = await self._approve_external_action(action, external_summaries[action])
+                if denied:
+                    return self.fail_response(denied, evidence={"action": action, "approved": False})
             if action == "connect":
                 owner = (kwargs.get("owner") or "").strip()
                 repo = (kwargs.get("repo") or "").strip()
