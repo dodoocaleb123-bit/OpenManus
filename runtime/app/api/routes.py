@@ -34,6 +34,9 @@ from app.platform.observability import PlatformObservability
 from app.platform.repository_map import build_repository_map
 from app.platform.sources import extract_sources
 from app.platform.store import PlatformStore
+from app.platform.automation import AutomationStore, ProcessManager, verify_webhook
+from app.platform.parallel_research import parallel_research
+from app.platform.specialists import select_specialists
 
 # Proxies (Render included) close idle HTTP connections; a comment frame every
 # 20s keeps the stream alive. Streams also end after ~14 minutes and the
@@ -105,6 +108,26 @@ class TaskCreate(BaseModel):
 
 class TaskMessage(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
+
+
+class ScheduleCreate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=20000)
+    interval_seconds: int = Field(ge=60, le=31_536_000)
+
+
+class ProcessStart(BaseModel):
+    command: list[str] = Field(min_length=1, max_length=32)
+
+
+class ConnectorCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    endpoint: str = Field(min_length=8, max_length=2000)
+    secret: str = Field(min_length=16, max_length=500)
+
+
+class ParallelResearchRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=20)
+    concurrency: int = Field(default=3, ge=1, le=8)
 
 
 class ChatMessageCreate(BaseModel):
@@ -355,11 +378,13 @@ async def sse_event_stream(
             yield ": ping\n\n"
 
 
-def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRouter:
+def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automation_store: AutomationStore | None = None, process_manager: ProcessManager | None = None) -> APIRouter:
     router = APIRouter(prefix="/api")
     chat_locks: dict[str, asyncio.Lock] = {}
     active_chat_streams: set[str] = set()
     observability = PlatformObservability(store.root)
+    automation = automation_store or AutomationStore(store.db_path)
+    processes = process_manager or ProcessManager()
 
     def audit(action: str, **data: object) -> None:
         """Write a small redacted audit record; never include prompts or secrets."""
@@ -1118,6 +1143,83 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator) -> APIRo
             return {"result": result}
         except GitError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # ------------------------------------------------------------- Phase C orchestration
+    @router.get("/projects/{project_id}/specialists")
+    async def project_specialists(project_id: str):
+        project_or_404(project_id)
+        return {"roles": select_specialists(intent="coding", complexity="heavy", browser=True, requires_artifacts=True)}
+
+    @router.post("/projects/{project_id}/research/parallel")
+    async def parallel_project_research(project_id: str, body: ParallelResearchRequest):
+        project_or_404(project_id)
+        return {"results": await parallel_research(body.urls, limit=body.concurrency), "concurrency": body.concurrency}
+
+    @router.get("/projects/{project_id}/schedules")
+    async def list_project_schedules(project_id: str):
+        project_or_404(project_id)
+        return automation.list_schedules(project_id)
+
+    @router.post("/projects/{project_id}/schedules")
+    async def create_project_schedule(project_id: str, body: ScheduleCreate):
+        project_or_404(project_id)
+        return automation.create_schedule(project_id, body.prompt, body.interval_seconds)
+
+    @router.delete("/schedules/{schedule_id}")
+    async def delete_project_schedule(schedule_id: str, request: Request):
+        require_confirmation(request, "schedule deletion")
+        if not automation.delete_schedule(schedule_id):
+            raise HTTPException(status_code=404, detail="Schedule not found")
+        return {"deleted": schedule_id}
+
+    @router.post("/projects/{project_id}/processes")
+    async def start_project_process(project_id: str, body: ProcessStart):
+        project = project_or_404(project_id)
+        process_id = str(uuid4())
+        try:
+            return await processes.start(process_id, body.command, Path(project.workspace), project_id=project_id)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/processes/{process_id}")
+    async def process_status(process_id: str):
+        return await processes.status(process_id)
+
+    @router.get("/projects/{project_id}/processes")
+    async def project_processes(project_id: str):
+        project_or_404(project_id)
+        return automation.list_processes(project_id)
+
+    @router.post("/processes/{process_id}/stop")
+    async def stop_project_process(process_id: str, request: Request):
+        require_confirmation(request, "process termination")
+        if not await processes.stop(process_id):
+            raise HTTPException(status_code=404, detail="Running process not found")
+        return {"id": process_id, "status": "stopping"}
+
+    @router.get("/projects/{project_id}/connectors")
+    async def list_project_connectors(project_id: str):
+        project_or_404(project_id)
+        return automation.list_connectors(project_id)
+
+    @router.post("/projects/{project_id}/connectors")
+    async def create_project_connector(project_id: str, body: ConnectorCreate):
+        project_or_404(project_id)
+        if not body.endpoint.startswith(("https://", "http://")):
+            raise HTTPException(status_code=400, detail="Connector endpoint must use HTTP or HTTPS")
+        return automation.add_connector(project_id, body.name, body.endpoint, body.secret)
+
+    @router.post("/connectors/{connector_id}/webhook")
+    async def receive_connector_webhook(connector_id: str, request: Request):
+        connector = automation.get_connector(connector_id)
+        if not connector:
+            raise HTTPException(status_code=404, detail="Connector not found")
+        raw = await request.body()
+        if not verify_webhook(raw, request.headers.get("x-openmanus-signature", ""), connector["secret"]):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        payload = raw.decode("utf-8", errors="replace")[:20000]
+        task, _, _ = await launch_task(connector["project_id"], f"Process this signed connector event from {connector['name']}:\n{payload}", execution_mode="implement")
+        return {"accepted": True, "task_id": task.id}
 
     # ------------------------------------------------------------- tasks
 

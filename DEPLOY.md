@@ -318,6 +318,23 @@ When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses O
 - **Project memory:** bounded, project-scoped memory is available in the Memory panel
   and is included as untrusted context for future requests. Never store secrets in it.
 
+### Phase C orchestration features
+
+- **Specialist roles:** each task records the roles selected for its intent, such as
+  planner, researcher, coder, vision reviewer, verifier, and artifact specialist.
+- **Bounded parallel research:** `POST /api/projects/{project_id}/research/parallel`
+  accepts up to 20 URLs and enforces a maximum concurrency of 8.
+- **Scheduled automation:** create project schedules from the Automations panel or
+  the schedules API. The local scheduler persists schedules in SQLite and launches
+  normal OpenManus tasks after restart. The minimum interval is 60 seconds.
+- **Persistent process management:** project processes are started without a shell,
+  use the selected workspace as their working directory, and can be inspected or
+  stopped through the Processes panel/API. Stop requests require confirmation.
+- **External connectors and webhooks:** connector endpoints are stored without
+  exposing their secrets. Outbound payloads use HMAC-SHA256 signatures, and inbound
+  webhooks require a matching `X-OpenManus-Signature: sha256=...` header before a
+  task is created.
+
 Set these variables when local-first mode is enabled:
 
 | Variable | Purpose |

@@ -19,6 +19,7 @@ from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskSta
 from app.platform.store import PlatformStore
 from app.platform.sources import citation_records
 from app.platform.visual import visual_prompt, visual_verification_enabled
+from app.platform.specialists import select_specialists
 from app.platform.verification import FailureClassifier, VerificationEngine, stable_operation_id
 
 AgentFactory = Callable[..., Awaitable[Any]]
@@ -331,6 +332,13 @@ class AgentOrchestrator:
                 has_images=False,
             )
             task.evidence["classification"] = classification
+            task.evidence["specialists"] = select_specialists(
+                intent=classification.get("intent", "conversation"),
+                complexity=classification.get("complexity", "normal"),
+                has_images=bool(classification.get("has_images")),
+                browser=bool(classification.get("browser")),
+                requires_artifacts=bool(re.search(r"\b(report|document|spreadsheet|csv|xlsx|pdf|artifact)\b", task.prompt, re.IGNORECASE)),
+            )
             task.evidence["budget"] = {
                 "max_steps": _task_step_budget(task.prompt, bool(task.browser_session_id)),
                 "max_repair_cycles": int(os.environ.get("AGENT_MAX_REPAIR_CYCLES", "1")),
