@@ -60,6 +60,39 @@ def _parse_json(text: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {"raw": text, "parse_error": "reasoning response was not an object"}
 
 
+def _string_list(value: Any, *, limit: int = 12) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip()[:500] for item in value if str(item).strip()][:limit]
+
+
+def _normalise_plan(value: dict[str, Any], model: str, raw: str) -> dict[str, Any]:
+    """Return a bounded advisory plan with a stable schema."""
+    return {
+        "summary": str(value.get("summary") or "").strip()[:2000],
+        "intent": str(value.get("intent") or "unknown").strip()[:120],
+        "steps": _string_list(value.get("steps")),
+        "affected_areas": _string_list(value.get("affected_areas")),
+        "risks": _string_list(value.get("risks")),
+        "tests": _string_list(value.get("tests")),
+        "requires_confirmation": bool(value.get("requires_confirmation", False)),
+        "model": model,
+        "raw_response": raw[:12000],
+        "valid": bool(value.get("summary")) and bool(_string_list(value.get("steps"))),
+    }
+
+
+def _normalise_review(value: dict[str, Any], model: str, raw: str) -> dict[str, Any]:
+    return {
+        "passed": bool(value.get("passed", False)),
+        "concerns": _string_list(value.get("concerns")),
+        "recommended_follow_up": str(value.get("recommended_follow_up") or "").strip()[:2000],
+        "model": model,
+        "raw_response": raw[:12000],
+        "valid": isinstance(value.get("passed"), bool),
+    }
+
+
 async def make_plan(llm: LLM, *, prompt: str, conversation: str, project_name: str, workspace: str) -> dict[str, Any]:
     """Ask the reasoning model for an advisory plan; never execute its output."""
     response = await llm.ask(
@@ -81,10 +114,7 @@ async def make_plan(llm: LLM, *, prompt: str, conversation: str, project_name: s
         temperature=0.0,
         max_tokens=max(256, int(os.environ.get("REASONING_LLM_MAX_TOKENS", "1200"))),
     )
-    plan = _parse_json(response)
-    plan["model"] = llm.model
-    plan["raw_response"] = response[:12000]
-    return plan
+    return _normalise_plan(_parse_json(response), llm.model, response)
 
 
 async def review_result(
@@ -115,7 +145,4 @@ async def review_result(
         temperature=0.0,
         max_tokens=max(256, int(os.environ.get("REASONING_LLM_MAX_TOKENS", "1200"))),
     )
-    review = _parse_json(response)
-    review["model"] = llm.model
-    review["raw_response"] = response[:12000]
-    return review
+    return _normalise_review(_parse_json(response), llm.model, response)

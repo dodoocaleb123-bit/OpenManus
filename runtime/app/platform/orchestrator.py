@@ -13,6 +13,7 @@ from app.platform.browser import BrowserManager
 from app.platform.coding_loop import CodingLoop
 from app.platform.reasoning import make_plan, reasoning_enabled, review_result, should_reason
 from app.platform.llm_check import llm_problem
+from app.platform.classification import classify_request
 from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 from app.platform.store import PlatformStore
 from app.platform.verification import FailureClassifier, VerificationEngine, stable_operation_id
@@ -128,12 +129,15 @@ class AgentOrchestrator:
     async def resume_task(self, task: Task) -> None:
         if task.id in self._running and self._running[task.id] is not None:
             return
+        previous_checkpoint = task.checkpoint
         task.status = TaskStatus.QUEUED
         task.finished_at = None
         task.error = None
         task.result = None
-        task.checkpoint = "resumed"
+        task.recovery = {**task.recovery, "resumed_from": previous_checkpoint, "resume_requested_at": datetime.now(timezone.utc).isoformat()}
+        task.checkpoint = "resume_requested"
         await self.store.save_task(task)
+        await self.store.save_checkpoint(task.id, "resume_requested", {"from": previous_checkpoint, "attempt": task.attempt})
         await self.store.emit(Event(task_id=task.id, type="task.resumed", message="Task resumed"))
         self._running.pop(task.id, None)
         self.start(task)
@@ -217,6 +221,7 @@ class AgentOrchestrator:
             extra_tools=extra_tools,
             llm=cloud_llm,
             max_steps=_task_step_budget(task.prompt, bool(task.browser_session_id)),
+            request_approval=ask,
         )
 
     def _browser_tool(self, task: Task, project: Project):
@@ -316,6 +321,21 @@ class AgentOrchestrator:
                     await self.store.save_task(task)
                 await self.store.emit(Event(task_id=task.id, type=type_, message=message, data=data))
 
+            classification = classify_request(
+                task.prompt,
+                browser=bool(task.browser_session_id) or bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website|internet|research)\b", task.prompt, re.IGNORECASE)),
+                has_images=False,
+            )
+            task.evidence["classification"] = classification
+            task.evidence["budget"] = {
+                "max_steps": _task_step_budget(task.prompt, bool(task.browser_session_id)),
+                "max_repair_cycles": int(os.environ.get("AGENT_MAX_REPAIR_CYCLES", "1")),
+                "attempt": task.attempt,
+            }
+            await self.store.save_task(task)
+            await self.store.save_checkpoint(task.id, "classified", classification)
+            await emit("task.classified", "Request classified before execution", classification)
+
             await emit("workspace.ready", f"Workspace ready: {project.workspace}", {"workspace": project.workspace})
             if await self._try_fast_file_task(task, project, emit):
                 return
@@ -373,16 +393,22 @@ class AgentOrchestrator:
             conversation = "\n".join(f"{item.role.upper()}: {item.content}" for item in history)
             conversation = conversation[-30000:]
             project_memory = await asyncio.to_thread(self.store.get_project_memory, task.project_id)
+            await self.store.save_checkpoint(task.id, "execution_started", {"intent": task.evidence.get("classification", {}), "max_steps": max_steps, "max_repair_cycles": max_cycles})
             reasoning_plan: dict[str, Any] | None = None
-            if not research_only and reasoning_enabled() and should_reason(task.prompt, complexity=_task_complexity(task.prompt, bool(task.browser_session_id))) and "reasoning" in config.llm:
+            classified_complexity = task.evidence.get("classification", {}).get("complexity", _task_complexity(task.prompt, bool(task.browser_session_id)))
+            if not research_only and reasoning_enabled() and should_reason(task.prompt, complexity=classified_complexity) and "reasoning" in config.llm:
                 try:
                     reasoning_llm = LLM(config_name="reasoning")
                     await emit("reasoning.started", "Creating a selective reasoning plan before execution", {"model": reasoning_llm.model})
                     reasoning_plan = await make_plan(reasoning_llm, prompt=task.prompt, conversation=conversation, project_name=project.name, workspace=project.workspace)
                     task.evidence["reasoning"] = {"planning": reasoning_plan}
+                    if not reasoning_plan.get("valid"):
+                        await emit("reasoning.invalid", "Reasoning plan was not valid JSON with the required fields; continuing safely without it", {"model": reasoning_llm.model})
+                        reasoning_plan = None
                     await self.store.save_task(task)
-                    await self.store.save_checkpoint(task.id, "reasoning_planned", {"model": reasoning_llm.model, "plan": reasoning_plan})
-                    await emit("reasoning.plan", "Reasoning plan ready; Qwen remains the execution model", {"plan": reasoning_plan, "model": reasoning_llm.model})
+                    await self.store.save_checkpoint(task.id, "reasoning_planned", {"model": reasoning_llm.model, "plan": task.evidence.get("reasoning", {}).get("planning")})
+                    if reasoning_plan:
+                        await emit("reasoning.plan", "Reasoning plan ready; Qwen remains the execution model", {"plan": reasoning_plan, "model": reasoning_llm.model})
                 except Exception as exc:
                     await emit("reasoning.skipped", "Reasoning plan unavailable; continuing with the execution model", {"error": str(exc)[:500]})
             research_instructions = (

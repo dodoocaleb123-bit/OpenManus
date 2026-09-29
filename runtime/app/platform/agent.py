@@ -35,6 +35,7 @@ from app.tool.base import BaseTool, CLIResult, ToolResult
 from app.tool.bash import Bash, _BashSession
 from app.tool.str_replace_editor import StrReplaceEditor
 from app.utils.env import scrubbed_env
+from app.platform.command_risk import classify_command
 
 EmitFn = Callable[[str, str, dict], Awaitable[None]]
 
@@ -128,6 +129,7 @@ class WorkspaceBash(Bash):
 
     workspace: Path = Field(default_factory=Path.cwd)
     timeout_seconds: float = 300.0
+    request_approval: Any = Field(default=None, exclude=True)
 
     async def execute(self, command: str | None = None, restart: bool = False, **kwargs) -> CLIResult:
         if restart or (self._session is not None and getattr(self._session, "_timed_out", False)):
@@ -142,6 +144,22 @@ class WorkspaceBash(Bash):
             await self._session.start()
         if command is None:
             return CLIResult(error="no command provided.")
+        risk = classify_command(command)
+        if risk.level != "safe":
+            reason = "; ".join(risk.reasons) or "command policy requires review"
+            approved = False
+            if risk.level == "confirmation" and self.request_approval is not None:
+                answer = await self.request_approval(
+                    f"The agent wants to run this {risk.level}-risk command:\n\n{command}\n\nReason: {reason}\nApprove it?"
+                )
+                approved = bool(answer and answer.strip().casefold() in {"y", "yes", "approve", "approved", "proceed"})
+            if not approved:
+                return CLIResult(
+                    error=f"Command blocked by OpenManus safety policy ({risk.level}): {reason}. "
+                    "Ask the user for approval before retrying.",
+                    evidence={"tool": self.name, "command": redact_sensitive_text(command), "risk": risk.level, "reasons": list(risk.reasons), "requires_confirmation": True},
+                    retryable=False,
+                )
         result = await self._session.run(command)
         for attribute in ("output", "error", "system"):
             value = getattr(result, attribute, None)
@@ -339,13 +357,14 @@ class PlatformManus(Manus):
         emit: EmitFn | None = None,
         inbox: asyncio.Queue | None = None,
         ask: Callable[[str], Awaitable[Optional[str]]] | None = None,
+        request_approval: Callable[[str], Awaitable[Optional[str]]] | None = None,
         extra_tools: list[BaseTool] | None = None,
         llm: Any = None,
         max_steps: int | None = None,
     ) -> "PlatformManus":
         ws = Path(workspace).resolve()
         tools: list[BaseTool] = [
-            WorkspaceBash(workspace=ws, timeout_seconds=float(_int_env("AGENT_COMMAND_TIMEOUT", 300, 30, 3600))),
+            WorkspaceBash(workspace=ws, timeout_seconds=float(_int_env("AGENT_COMMAND_TIMEOUT", 300, 30, 3600)), request_approval=request_approval),
             WorkspacePython(workspace=ws),
             WorkspaceEditor(workspace=ws),
         ]

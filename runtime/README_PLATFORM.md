@@ -168,3 +168,13 @@ page are faked; git operations run against local bare repositories.
 - The optional reasoning profile is disabled by default. When enabled, it plans and
   reviews complex or risky tasks, while Qwen remains the only model that executes
   tools; deterministic validation remains authoritative.
+- Phase A adds deterministic request classification before the first tool call. The
+  task evidence records intent, complexity, risk, and the selected execution budget;
+  this metadata is advisory and never overrides explicit user intent.
+- Workspace shell commands are classified as `safe`, `confirmation`, or `blocked`.
+  Dependency installs, recursive deletion, privileged operations, and external Git
+  changes require human approval. Remote scripts piped into a shell and direct
+  disk-formatting operations are blocked. Approval prompts show the exact command
+  and the policy reason.
+- Resume requests preserve the previous checkpoint and recovery metadata, record a
+  `resume_requested` checkpoint, and re-queue through the normal durable lifecycle.
