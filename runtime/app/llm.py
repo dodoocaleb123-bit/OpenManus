@@ -703,9 +703,14 @@ class LLM:
             collected_messages = []
             completion_text = ""
             async for chunk in response:
-                if getattr(chunk, "choices", None) and getattr(chunk.choices[0], "finish_reason", None):
-                    self.last_finish_reason = chunk.choices[0].finish_reason
-                chunk_message = chunk.choices[0].delta.content or ""
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                if getattr(choice, "finish_reason", None):
+                    self.last_finish_reason = choice.finish_reason
+                delta = getattr(choice, "delta", None)
+                chunk_message = getattr(delta, "content", None) or ""
                 collected_messages.append(chunk_message)
                 completion_text += chunk_message
                 if chunk_message:

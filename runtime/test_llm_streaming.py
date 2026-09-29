@@ -54,6 +54,7 @@ def _chunk(*, content=None, tool_calls=None, finish_reason=None):
 @pytest.mark.asyncio
 async def test_ask_stream_emits_tokens_and_returns_complete_text():
     completion_client = FakeCompletions([
+        SimpleNamespace(choices=[]),
         _chunk(content="First "),
         _chunk(content="answer", finish_reason="stop"),
     ])
