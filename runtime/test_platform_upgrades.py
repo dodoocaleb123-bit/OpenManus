@@ -10,12 +10,14 @@ from app.server import create_app
 
 class FakeChatLLM:
     last_system = None
+    last_messages = None
 
     def __init__(self, *args, **kwargs):
         pass
 
     async def ask(self, messages, system_msgs=None, **kwargs):
         FakeChatLLM.last_system = system_msgs
+        FakeChatLLM.last_messages = messages
         user_messages = [message["content"] for message in messages if message["role"] == "user"]
         return f"Local reply: {user_messages[-1]}"
 
@@ -50,6 +52,37 @@ def test_answer_and_plan_modes_do_not_launch_tasks_or_load_repository(tmp_path, 
     assert plan.json()["plan"]["intent"] == "plan_only"
     assert "Plan only" in FakeChatLLM.last_system[0]["content"]
     assert client.get(f"/api/projects/{project['id']}/tasks").json() == []
+
+
+def test_math_request_requires_current_problem_and_does_not_reuse_prior_solution(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    project = client.post("/api/projects", json={"name": "math-grounding"}).json()
+
+    first = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Solve 2+2", "mode": "answer"},
+    )
+    assert first.status_code == 200
+    assert len(FakeChatLLM.last_messages) == 1
+
+    previous_call = FakeChatLLM.last_messages
+    missing = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "I want you to answer a mathematics question", "mode": "answer"},
+    )
+    assert missing.status_code == 200
+    assert "complete mathematics question" in missing.json()["assistant"]["content"]
+    assert FakeChatLLM.last_messages is previous_call
+
+    second = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Solve 5+5", "mode": "answer"},
+    )
+    assert second.status_code == 200
+    assert len(FakeChatLLM.last_messages) == 1
+    assert FakeChatLLM.last_messages[0]["content"] == "Solve 5+5"
+    assert "Never invent a problem" in FakeChatLLM.last_system[0]["content"]
+    assert "Files explicitly attached to this message: none" in FakeChatLLM.last_system[0]["content"]
 
 
 def test_project_memory_is_persisted_scoped_and_rejects_credentials(tmp_path, monkeypatch):
