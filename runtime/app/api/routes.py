@@ -35,7 +35,7 @@ from app.platform.phase_d import evaluate_trajectory, role_allows, validate_plug
 from app.platform.repository_map import build_repository_map
 from app.platform.sources import extract_sources
 from app.platform.store import PlatformStore
-from app.platform.automation import AutomationStore, ProcessManager, verify_webhook
+from app.platform.automation import AutomationStore, ProcessManager, parse_preview_command, verify_webhook, wait_for_port
 from app.platform.parallel_research import parallel_research
 from app.platform.specialists import select_specialists
 
@@ -118,6 +118,12 @@ class ScheduleCreate(BaseModel):
 
 class ProcessStart(BaseModel):
     command: list[str] = Field(min_length=1, max_length=32)
+
+
+class PreviewStart(BaseModel):
+    command: str | None = Field(default=None, max_length=2000)
+    port: int = Field(default=3000, ge=1, le=65535)
+    path: str = Field(default="/", min_length=1, max_length=500)
 
 
 class ConnectorCreate(BaseModel):
@@ -1324,6 +1330,29 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         try:
             return await processes.start(process_id, body.command, Path(project.workspace), project_id=project_id)
         except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/projects/{project_id}/preview")
+    async def start_project_preview(project_id: str, body: PreviewStart):
+        """Start a local app preview and open it in the browser the user sees."""
+        project = project_or_404(project_id)
+        try:
+            command = parse_preview_command(body.command, Path(project.workspace), body.port)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        process_id = str(uuid4())
+        try:
+            process = await processes.start(process_id, command, Path(project.workspace), project_id=project_id)
+            await wait_for_port(body.port)
+            browsers = getattr(orchestrator, "browsers", None)
+            if browsers is None:
+                raise RuntimeError("The shared browser is not available in this deployment")
+            path = body.path if body.path.startswith("/") else "/" + body.path
+            url = f"http://127.0.0.1:{body.port}{path}"
+            session = await browsers.get_or_create(project_id, url)
+            return {"process": process, "url": url, "browser": await session.status(), "detected": body.command is None}
+        except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+            await processes.stop(process_id)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/processes/{process_id}")

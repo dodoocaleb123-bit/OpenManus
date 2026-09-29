@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import shlex
 import signal
 import sqlite3
 import subprocess
@@ -15,6 +16,59 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
+
+
+def detect_preview_command(root: Path, port: int = 3000) -> list[str] | None:
+    """Choose a conservative local web-server command for a project workspace."""
+    root = Path(root)
+    package = root / "package.json"
+    if package.is_file():
+        try:
+            scripts = json.loads(package.read_text(encoding="utf-8")).get("scripts", {})
+        except (OSError, ValueError):
+            scripts = {}
+        if isinstance(scripts, dict):
+            script = next((name for name in ("dev", "start", "serve") if name in scripts), None)
+            if script:
+                return ["npm", "run", script]
+    if (root / "streamlit_app.py").is_file():
+        return ["streamlit", "run", "streamlit_app.py", "--server.address", "0.0.0.0", "--server.port", str(port)]
+    if (root / "index.html").is_file():
+        return ["python", "-m", "http.server", str(port), "--bind", "0.0.0.0"]
+    for filename in ("app.py", "main.py", "server.py"):
+        if (root / filename).is_file():
+            return ["python", filename]
+    return None
+
+
+def parse_preview_command(command: str | None, root: Path, port: int = 3000) -> list[str]:
+    if command and command.strip():
+        parts = shlex.split(command, posix=False)
+        if not parts or any("\x00" in part for part in parts):
+            raise ValueError("Preview command must not be empty or contain NUL bytes")
+        return parts
+    detected = detect_preview_command(root, port)
+    if detected is None:
+        raise ValueError("Could not detect a web app entry point; provide a preview command")
+    return detected
+
+
+async def wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 30.0) -> None:
+    """Wait until a preview server accepts HTTP connections on the given port."""
+    deadline = asyncio.get_running_loop().time() + timeout
+
+    def probe() -> bool:
+        try:
+            with urllib.request.urlopen(f"http://{host}:{port}/", timeout=1) as response:
+                return response.status < 500
+        except Exception:
+            return False
+
+    while asyncio.get_running_loop().time() < deadline:
+        if await asyncio.to_thread(probe):
+            return
+        await asyncio.sleep(0.25)
+    raise TimeoutError(f"Preview server did not respond on http://{host}:{port} within {timeout:g}s")
 
 
 def utcnow() -> str:
@@ -89,16 +143,43 @@ class AutomationStore:
             rows = db.execute("SELECT id,project_id,command,cwd,pid,status,created_at,stopped_at,last_output FROM managed_processes WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
         return [dict(row) for row in rows]
 
+    def update_process(self, process_id: str, *, status: str | None = None, output: str | None = None) -> None:
+        fields, values = [], []
+        if status is not None:
+            fields.append("status=?")
+            values.append(status)
+        if output is not None:
+            fields.append("last_output=?")
+            values.append(output[-10000:])
+        if not fields:
+            return
+        values.append(process_id)
+        with self._connect() as db:
+            db.execute(f"UPDATE managed_processes SET {', '.join(fields)} WHERE id=?", values)
+
 class ProcessManager:
     """Supervise commands without a shell, confined to a project workspace."""
     def __init__(self, records: AutomationStore | None = None):
         self.processes: dict[str, asyncio.subprocess.Process] = {}
+        self._drainers: dict[str, asyncio.Task] = {}
         self.records = records
+
+    async def _drain_output(self, process_id: str, proc: asyncio.subprocess.Process) -> None:
+        output = ""
+        if proc.stdout is not None:
+            async for raw in proc.stdout:
+                output = (output + raw.decode(errors="replace"))[-10000:]
+                if self.records:
+                    self.records.update_process(process_id, output=output)
+        code = await proc.wait()
+        if self.records:
+            self.records.update_process(process_id, status="exited" if code == 0 else "failed")
     async def start(self, process_id: str, command: list[str], cwd: Path, project_id: str | None = None) -> dict[str, Any]:
         if not command or any("\x00" in part for part in command):
             raise ValueError("A non-empty safe command list is required")
         proc = await asyncio.create_subprocess_exec(*command, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
         self.processes[process_id] = proc
+        self._drainers[process_id] = asyncio.create_task(self._drain_output(process_id, proc))
         if self.records and project_id:
             self.records.record_process(process_id, project_id, command, str(cwd), proc.pid)
         return {"id": process_id, "pid": proc.pid, "status": "running", "command": command, "cwd": str(cwd)}
@@ -110,6 +191,8 @@ class ProcessManager:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             return False
+        if self.records:
+            self.records.update_process(process_id, status="stopping")
         return True
     async def shutdown(self) -> None:
         for process_id in list(self.processes):

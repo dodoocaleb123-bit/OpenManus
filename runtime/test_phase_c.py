@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.platform.automation import AutomationStore, verify_webhook
+from app.platform.automation import AutomationStore, detect_preview_command, parse_preview_command, verify_webhook
 from app.server import create_app
 from app.platform.specialists import bounded_gather, select_specialists
 
@@ -46,6 +46,14 @@ def test_signed_webhook_verification():
     signature = "sha256=" + hmac.new(b"secret", body, hashlib.sha256).hexdigest()
     assert verify_webhook(body, signature, "secret")
     assert not verify_webhook(body, signature, "wrong")
+
+
+def test_preview_command_detection_and_override(tmp_path: Path):
+    (tmp_path / "index.html").write_text("<h1>Preview</h1>")
+    assert detect_preview_command(tmp_path, 3210) == ["python", "-m", "http.server", "3210", "--bind", "0.0.0.0"]
+    assert parse_preview_command("npm run dev", tmp_path) == ["npm", "run", "dev"]
+    (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite"}}')
+    assert parse_preview_command(None, tmp_path) == ["npm", "run", "dev"]
 
 
 def test_phase_c_routes_and_process_manager(tmp_path, monkeypatch):

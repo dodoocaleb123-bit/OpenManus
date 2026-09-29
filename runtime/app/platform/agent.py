@@ -317,6 +317,10 @@ WORKING METHOD (Plan -> Act -> Observe -> Verify -> Repeat)
 3. After every action, read the result. On errors, diagnose the real cause from the output and fix it. If a file-create action reports that the file already exists, do not repeat `create`: use `view` or a safe edit, verify its contents, and continue.
 4. Verify with evidence: install dependencies, run the build and the tests, start the app and check it
    in the browser for UI work. Add or update tests for new behaviour when the project has a test setup.
+   For any app with a GUI or web interface, start its local preview server with a background command,
+   verify the listening port, navigate the shared platform_browser to it, and take a screenshot before
+   finishing. Leave the preview process running when practical so the user can inspect it and request
+   edits. Previewing is separate from publishing: never push or publish solely because a preview works.
 5. Keep all files inside the workspace. Never print, log or commit secrets. Keep a .gitignore with
    node_modules/, .venv/, build outputs and .env files.
 6. Git: when the user asks for commits/PRs, or a repository is connected and the change is complete,
