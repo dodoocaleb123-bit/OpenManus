@@ -7,7 +7,7 @@
 <script>
 window.MathJax = {
   tex: {
-    inlineMath: [['\\(', '\\)']],
+    inlineMath: [['\\(', '\\)'], ['$','$']],
     displayMath: [['\\[', '\\]'], ['$$', '$$']],
     processEscapes: true,
     packages: {'[+]': ['ams']}
@@ -466,7 +466,7 @@ function currentProcessingStep(){return processingActiveStep||processingSteps.si
 function addProcessingEvent(ev,node){const match=String(ev.message||'').match(/Step\s+(\d+)/i);if(match){processingActiveStep=Number(match[1]);ensureProcessingStep(processingActiveStep)}const number=match?Number(match[1]):currentProcessingStep();const step=ensureProcessingStep(number);step.detail.append(node)}
 function escapeHtml(text){return String(text??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}
 	function renderMarkdown(text){let html=escapeHtml(text);html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>');html=html.replace(/```mermaid\s*\n([\s\S]*?)```/gi,'<pre class=\"mermaid-source\">$1</pre>');html=html.replace(/```([\s\S]*?)```/g,'<pre>$1</pre>');html=html.replace(/`([^`]+)`/g,'<code>$1</code>');html=html.replace(/^###\s+(.+)$/gm,'<h3>$1</h3>');html=html.replace(/^##\s+(.+)$/gm,'<h3>$1</h3>');html=html.replace(/^---+\s*$/gm,'<hr>');html=html.replace(/^\s*[-*]\s+(.+)$/gm,'<li>$1</li>');html=html.replace(/(<li>.*<\/li>)(?:\n|$)/g,'<ul>$1</ul>');html=html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');html=html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g,'<em>$1</em>');return html}
-function typesetMath(node,attempt=0){if(!node||!node.textContent||!/[\\$][\\(\\[\\$]/.test(node.textContent))return;if(window.MathJax&&typeof window.MathJax.typesetPromise==='function'){window.MathJax.typesetPromise([node]).catch(()=>{});return}if(attempt<20)setTimeout(()=>typesetMath(node,attempt+1),250)}
+function typesetMath(node,attempt=0){if(!node||!node.textContent||!/(?:\\\(|\\\[|\$\$|\$[^$\n]+\$)/.test(node.textContent))return;if(window.MathJax&&typeof window.MathJax.typesetPromise==='function'){window.MathJax.typesetPromise([node]).catch(()=>{});return}if(attempt<20)setTimeout(()=>typesetMath(node,attempt+1),250)}
 function renderDiagrams(node,attempt=0){const sources=[...node.querySelectorAll('.mermaid-source')];if(!sources.length)return;if(!window.mermaid){if(attempt<20)setTimeout(()=>renderDiagrams(node,attempt+1),250);return}sources.forEach((source,index)=>{const diagram=el('div','mermaid');diagram.textContent=source.textContent.trim();source.replaceWith(diagram)});window.mermaid.run({nodes:[...node.querySelectorAll('.mermaid')]}).catch(()=>{})}
 function formatResponseDuration(ms,approximate=false){const value=Math.max(0,Number(ms)||0),prefix=approximate?'~':'';if(value<1000)return prefix+(value<1?'<1 ms':`${Math.round(value)} ms`);const seconds=value/1000;if(seconds<60){const rounded=Math.round(seconds);if(rounded<60)return prefix+`${seconds<10?seconds.toFixed(1):rounded} sec`}const totalSeconds=Math.round(seconds),minutes=Math.floor(totalSeconds/60),remaining=totalSeconds%60;return prefix+`${minutes} min${remaining?` ${remaining} sec`:''}`}
 function renderChatMessage(message,before=null){

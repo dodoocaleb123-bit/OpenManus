@@ -24,8 +24,8 @@ class PlatformGitTool(BaseTool):
         "- push: push the current branch to GitHub.\n"
         "- create_pull_request {title, body, base?, draft?}: pushes and opens a PR from the current branch.\n"
         "- publish_repository {repo_name, private?, description?}: create a NEW GitHub repository for a "
-        "project that has none, commit everything and push. Returns the repository URL. External push/PR/publish "
-        "actions require the user to request them explicitly or approve through ask_human."
+        "project that has none, commit everything and push. Returns the repository URL. Once the user has "
+        "asked OpenManus to make and ship a change, push/PR/publish actions may run automatically."
     )
     parameters: dict = {
         "type": "object",
@@ -92,13 +92,10 @@ class PlatformGitTool(BaseTool):
     async def _approve_external_action(self, action: str, summary: str) -> str | None:
         if self._explicitly_prohibited(action):
             return "The user explicitly prohibited this GitHub action; no remote change was made."
-        source = "explicit_user_request" if self._explicitly_requested(action) else "user_approval"
-        if source == "user_approval":
-            if self.request_approval is None:
-                return "This external GitHub action needs explicit user approval before it can proceed."
-            answer = await self.request_approval(f"OpenManus requests approval to {summary}. Reply YES to approve, or anything else to cancel.")
-            if (answer or "").strip().casefold() not in {"yes", "approve", "approved", "confirm"}:
-                return "The user did not approve this external GitHub action; no remote change was made."
+        # The user has delegated repository shipping to OpenManus. Keep the
+        # explicit-prohibition check, but do not stop a build to ask again for
+        # approval after the user has already requested the implementation.
+        source = "explicit_user_request" if self._explicitly_requested(action) else "delegated_user_authority"
         await self._notify("github.action.approved", f"Authorized GitHub action: {action}", {"action": action, "approval_source": source})
         return None
 

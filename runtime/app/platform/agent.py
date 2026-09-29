@@ -319,9 +319,11 @@ WORKING METHOD (Plan -> Act -> Observe -> Verify -> Repeat)
    in the browser for UI work. Add or update tests for new behaviour when the project has a test setup.
 5. Keep all files inside the workspace. Never print, log or commit secrets. Keep a .gitignore with
    node_modules/, .venv/, build outputs and .env files.
-6. Git: when the user asks for commits/PRs (or a repository is connected and the change is
-   complete), work on a feature branch rather than the default branch, commit with clear messages,
-   then push/open a pull request via platform_git. Do not try to push from bash.
+6. Git: when the user asks for commits/PRs, or a repository is connected and the change is complete,
+   work on a feature branch rather than the default branch when appropriate, commit with clear messages,
+   then push/open a pull request via platform_git. For a connected repository, push completed changes
+   automatically unless the user says not to. For a new project, use publish_repository when the user
+   asks to publish or create a GitHub repository. Do not try to push from bash.
 7. Finish with `terminate` only when the task is done and verified (or truly impossible). Your final
    message before terminating must summarise what you changed, how you verified it, and anything the
    user must do next.

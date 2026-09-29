@@ -134,26 +134,20 @@ def test_github_push_and_pull_request_routes_require_confirmation(tmp_path, monk
     assert pr.status_code == 428
 
 
-def test_git_tool_requires_user_request_or_live_approval_for_external_changes():
+def test_git_tool_allows_delegated_external_changes_but_honors_prohibition():
     from app.platform.git_tool import PlatformGitTool
 
     explicit = PlatformGitTool(user_request="Finish the README changes and push them to GitHub")
     assert explicit._explicitly_requested("push")
     assert not explicit._explicitly_requested("publish_repository")
+    assert asyncio.run(explicit._approve_external_action("push", "push changes")) is None
 
     blocked = PlatformGitTool(user_request="Update the README; do not push anything")
     assert not blocked._explicitly_requested("push")
     assert "prohibited" in asyncio.run(blocked._approve_external_action("push", "push changes"))
 
-    asked = []
-
-    async def approve(question):
-        asked.append(question)
-        return "yes"
-
-    guarded = PlatformGitTool(user_request="Update the README", request_approval=approve)
-    assert asyncio.run(guarded._approve_external_action("push", "push the current branch")) is None
-    assert asked and "Reply YES" in asked[0]
+    delegated = PlatformGitTool(user_request="Update the README")
+    assert asyncio.run(delegated._approve_external_action("push", "push the current branch")) is None
 
 
 def test_agent_redacts_secrets_and_blocks_secret_config_files(tmp_path):
