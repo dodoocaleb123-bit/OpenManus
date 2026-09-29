@@ -113,6 +113,30 @@ def test_project_chat_can_stream_visible_deltas_and_persist_final_reply(tmp_path
     assert isinstance(history[-1]["response_time_ms"], int)
 
 
+def test_project_chat_replay_after_stream_disconnect_is_idempotent(tmp_path, monkeypatch):
+    calls = []
+
+    class CountingChatLLM(FakeChatLLM):
+        async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
+            calls.append(1)
+            return "A durable reply"
+
+    monkeypatch.setattr("app.api.routes.LLM", CountingChatLLM)
+    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "replay-chat"}).json()
+    headers = {"Accept": "text/event-stream", "Idempotency-Key": "chat-replay-1"}
+    first = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Tell me a short greeting"}, headers=headers)
+    assert first.status_code == 200
+    # A browser retry may negotiate JSON after the original stream completed.
+    second = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Tell me a short greeting"}, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["assistant"]["content"] == "A durable reply"
+    assert len(calls) == 1
+    history = client.get(f"/api/projects/{project['id']}/chat").json()
+    assert [(item["role"], item["content"]) for item in history] == [("user", "Tell me a short greeting"), ("assistant", "A durable reply")]
+
+
 def test_project_chat_rejects_unknown_project(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
     monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)

@@ -317,7 +317,53 @@ function safeUrl(u){return typeof u==='string'&&/^https:\/\/github\.com\//.test(
 function makeReplyDraft(){const node=el('div','ev assistant streaming-reply');const meta=el('div','reply-meta');meta.append(el('span','reply-name','OpenManus'));const duration=el('span','reply-duration','Waiting for first token…');meta.append(duration);const text=el('div','streaming-text');node.append(meta,text);$('feed').append(node);return {node,text,duration,content:''}}
 function appendReplyDraft(which,delta,firstTokenMs=null){if(!delta)return;let draft;if(which==='task'){if(!taskReplyDraft)taskReplyDraft=makeReplyDraft();draft=taskReplyDraft}else{if(!chatReplyDraft)chatReplyDraft=makeReplyDraft();draft=chatReplyDraft}const firstDelta=!draft.content;draft.content+=String(delta);draft.text.textContent=draft.content;const hasMeasured=firstTokenMs!==null&&firstTokenMs!==undefined&&Number.isFinite(Number(firstTokenMs));const measured=hasMeasured?Number(firstTokenMs):(firstDelta&&responseStartedAt?performance.now()-responseStartedAt:null);if(measured!==null)draft.duration.textContent=`First token in ${formatResponseDuration(measured)} · Streaming…`;else if(draft.duration.textContent==='Waiting for first token…')draft.duration.textContent='Streaming response…';const feed=$('feed');if(feed.scrollHeight-feed.scrollTop-feed.clientHeight<180)feed.scrollTop=feed.scrollHeight}
 function clearReplyDraft(which){const draft=which==='task'?taskReplyDraft:chatReplyDraft;if(draft?.node?.parentNode)draft.node.remove();if(which==='task')taskReplyDraft=null;else chatReplyDraft=null}
-async function postChatWithStream(url,opts={}){const request={...opts,headers:{Accept:'text/event-stream, application/json',...(opts.headers||{})}};if(request.body&&typeof request.body!=='string')request.body=JSON.stringify(request.body);if(request.body)request.headers['Content-Type']='application/json';const response=await fetch(url,request);const contentType=response.headers.get('content-type')||'';if(!response.ok){const data=await response.json().catch(()=>({}));const detail=Array.isArray(data.detail)?data.detail.map(x=>x.msg).join('; '):data.detail;throw Error(detail||`Request failed (${response.status})`)}if(!contentType.includes('text/event-stream'))return response.json();clearReplyDraft('chat');let finalAssistant=null,streamError=null,buffer='',eventName='message',dataLines=[];const dispatch=frame=>{for(const line of frame.split(/\r?\n/)){if(line.startsWith(':'))continue;if(line.startsWith('event:'))eventName=line.slice(6).trim();else if(line.startsWith('data:'))dataLines.push(line.slice(5).trimStart())}if(!dataLines.length){eventName='message';return}let data={};try{data=JSON.parse(dataLines.join('\n'))}catch(e){}if(eventName==='delta')appendReplyDraft('chat',data.delta||'');else if(eventName==='reset')clearReplyDraft('chat');else if(eventName==='complete'){finalAssistant=data.assistant||null;clearReplyDraft('chat')}else if(eventName==='error'){streamError=Error(data.message||'The model stream failed.');clearReplyDraft('chat')}eventName='message';dataLines=[]};const reader=response.body.getReader(),decoder=new TextDecoder();try{while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});let boundary;while((boundary=buffer.search(/\r?\n\r?\n/))>=0){const frame=buffer.slice(0,boundary);const separator=buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];buffer=buffer.slice(boundary+separator.length);dispatch(frame)}if(done)break}}catch(e){clearReplyDraft('chat');throw e}if(buffer.trim())dispatch(buffer);if(streamError)throw streamError;if(!finalAssistant){clearReplyDraft('chat');throw Error('The response stream ended before OpenManus finished the reply.')}return {kind:'chat',assistant:finalAssistant}}
+async function postChatWithStream(url,opts={}){
+ let lastError=null;
+ for(let attempt=0;attempt<3;attempt++){
+  try{return await postChatWithStreamAttempt(url,opts)}catch(error){
+   lastError=error;
+   if(attempt>=2)break;
+   clearReplyDraft('chat');
+   await new Promise(resolve=>setTimeout(resolve,350*Math.pow(2,attempt)));
+  }
+ }
+ throw lastError||Error('The response stream could not be completed.');
+}
+async function postChatWithStreamAttempt(url,opts={}){
+ const request={...opts,headers:{Accept:'text/event-stream, application/json',...(opts.headers||{})}};
+ if(request.body&&typeof request.body!=='string')request.body=JSON.stringify(request.body);
+ if(request.body)request.headers['Content-Type']='application/json';
+ const response=await fetch(url,request);
+ const contentType=response.headers.get('content-type')||'';
+ if(!response.ok){const data=await response.json().catch(()=>({}));const detail=Array.isArray(data.detail)?data.detail.map(x=>x.msg).join('; '):data.detail;throw Error(detail||`Request failed (${response.status})`)}
+ if(!contentType.includes('text/event-stream'))return response.json();
+ clearReplyDraft('chat');
+ let finalAssistant=null,streamError=null,buffer='',eventName='message',dataLines=[];
+ const dispatch=frame=>{
+  for(const line of frame.split(/\r?\n/)){if(line.startsWith(':'))continue;if(line.startsWith('event:'))eventName=line.slice(6).trim();else if(line.startsWith('data:'))dataLines.push(line.slice(5).trimStart())}
+  if(!dataLines.length){eventName='message';return}
+  let data={};try{data=JSON.parse(dataLines.join('\n'))}catch(e){}
+  if(eventName==='delta')appendReplyDraft('chat',data.delta||'');
+  else if(eventName==='reset')clearReplyDraft('chat');
+  else if(eventName==='complete'){finalAssistant=data.assistant||null;clearReplyDraft('chat')}
+  else if(eventName==='error'){streamError=Error(data.message||'The model stream failed.');clearReplyDraft('chat')}
+  eventName='message';dataLines=[];
+ };
+ const reader=response.body.getReader(),decoder=new TextDecoder();
+ try{
+  while(true){
+   const {value,done}=await reader.read();
+   buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+   let boundary;
+   while((boundary=buffer.search(/\r?\n\r?\n/))>=0){const frame=buffer.slice(0,boundary);const separator=buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];buffer=buffer.slice(boundary+separator.length);dispatch(frame)}
+   if(done)break;
+  }
+ }catch(error){clearReplyDraft('chat');throw Error('The response stream was interrupted; retrying the same request.');}
+ if(buffer.trim())dispatch(buffer);
+ if(streamError)throw streamError;
+ if(!finalAssistant){clearReplyDraft('chat');throw Error('The response stream ended before OpenManus finished the reply.');}
+ return {kind:'chat',assistant:finalAssistant};
+}
 const jsonApi=api;api=async function(url,opts={}){if(opts.method==='POST'&&/^\/api\/projects\/[^/]+\/chat$/.test(url))return postChatWithStream(url,opts);return jsonApi(url,opts)};
 
 /* ---------------- status ---------------- */

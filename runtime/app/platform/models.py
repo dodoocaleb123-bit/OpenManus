@@ -117,6 +117,7 @@ class ChatMessage(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     response_time_ms: Optional[int] = None
     time_to_first_token_ms: Optional[int] = None
+    request_id: Optional[str] = None
 
 
 class UploadedFile(BaseModel):

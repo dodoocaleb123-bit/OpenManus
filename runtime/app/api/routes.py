@@ -839,10 +839,18 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 plan["capabilities"].append("engineering")
         plan["execution_mode"] = mode
         async with chat_lock(project_id):
+            request_id = request.headers.get("idempotency-key")
+            if request_id and not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
+                raise HTTPException(status_code=400, detail="Idempotency-Key must contain 1–128 letters, numbers, dots, underscores, colons, or hyphens.")
             replay = await replay_idempotent_task(project_id, text, "implement", request.headers.get("idempotency-key"), request_mode=mode)
             if replay:
                 existing, user_message, assistant_message = replay
                 return {"kind": "task", "plan": existing.plan or plan, "user": user_message, "assistant": assistant_message, "task": existing}
+            existing_user = existing_assistant = None
+            if request_id:
+                existing_user, existing_assistant = await asyncio.to_thread(store.get_chat_request, project_id, request_id)
+                if existing_assistant:
+                    return {"kind": "chat", "plan": plan, "user": existing_user, "assistant": existing_assistant}
             if project_id in active_chat_streams:
                 raise HTTPException(status_code=409, detail="A reply is already streaming for this project.")
             if plan["requires_task"]:
@@ -856,7 +864,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                     idempotency_key=request.headers.get("idempotency-key"),
                 )
                 return {"kind": "task", "plan": plan, "user": user_message, "assistant": assistant_message, "task": task}
-            user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", text)
+            user_message = existing_user or await asyncio.to_thread(store.add_chat_message, project_id, "user", text, request_id=request_id)
 
             async def save_assistant_reply(content: str, time_to_first_token_ms: int | None = None):
                 return await asyncio.to_thread(
@@ -866,6 +874,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                     content,
                     response_time_ms=_elapsed_ms(request_started),
                     time_to_first_token_ms=time_to_first_token_ms,
+                    request_id=request_id,
                 )
 
             if re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[!. ]*", text, re.IGNORECASE):

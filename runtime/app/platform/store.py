@@ -92,6 +92,7 @@ class PlatformStore:
                     response_time_ms INTEGER,
                     time_to_first_token_ms INTEGER,
                     task_id TEXT,
+                    request_id TEXT,
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 );
                 CREATE TABLE IF NOT EXISTS uploaded_files (
@@ -175,8 +176,11 @@ class PlatformStore:
                 db.execute("ALTER TABLE chat_messages ADD COLUMN time_to_first_token_ms INTEGER")
             if "task_id" not in chat_columns:
                 db.execute("ALTER TABLE chat_messages ADD COLUMN task_id TEXT")
+            if "request_id" not in chat_columns:
+                db.execute("ALTER TABLE chat_messages ADD COLUMN request_id TEXT")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS idx_chat_task ON chat_messages(task_id,created_at) WHERE task_id IS NOT NULL")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_chat_request ON chat_messages(project_id,request_id,created_at) WHERE request_id IS NOT NULL")
             for profile in capability_registry():
                 db.execute(
                     "INSERT INTO model_capabilities(model,provider,capabilities,enabled,source,updated_at) VALUES(?,?,?,?,?,?) "
@@ -327,9 +331,10 @@ class PlatformStore:
             response_time_ms=row["response_time_ms"] if "response_time_ms" in row.keys() else None,
             time_to_first_token_ms=row["time_to_first_token_ms"] if "time_to_first_token_ms" in row.keys() else None,
             task_id=row["task_id"] if "task_id" in row.keys() else None,
+            request_id=row["request_id"] if "request_id" in row.keys() else None,
         )
 
-    def add_chat_message(self, project_id: str, role: str, content: str, response_time_ms: int | None = None, time_to_first_token_ms: int | None = None, task_id: str | None = None) -> ChatMessage:
+    def add_chat_message(self, project_id: str, role: str, content: str, response_time_ms: int | None = None, time_to_first_token_ms: int | None = None, task_id: str | None = None, request_id: str | None = None) -> ChatMessage:
         if not self.get_project(project_id):
             raise KeyError(f"Unknown project: {project_id}")
         if role not in {"user", "assistant", "system"}:
@@ -340,13 +345,19 @@ class PlatformStore:
             task = self.get_task(task_id)
             if not task or task.project_id != project_id:
                 raise KeyError(f"Unknown task for project: {task_id}")
-        message = ChatMessage(project_id=project_id, role=role, content=content, task_id=task_id, response_time_ms=response_time_ms, time_to_first_token_ms=time_to_first_token_ms)
+        message = ChatMessage(project_id=project_id, role=role, content=content, task_id=task_id, response_time_ms=response_time_ms, time_to_first_token_ms=time_to_first_token_ms, request_id=request_id)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO chat_messages(id,project_id,role,content,created_at,response_time_ms,time_to_first_token_ms,task_id) VALUES(?,?,?,?,?,?,?,?)",
-                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat(), message.response_time_ms, message.time_to_first_token_ms, message.task_id),
+                "INSERT INTO chat_messages(id,project_id,role,content,created_at,response_time_ms,time_to_first_token_ms,task_id,request_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                (message.id, message.project_id, message.role, message.content, message.created_at.isoformat(), message.response_time_ms, message.time_to_first_token_ms, message.task_id, message.request_id),
             )
         return message
+
+    def get_chat_request(self, project_id: str, request_id: str) -> tuple[ChatMessage | None, ChatMessage | None]:
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM chat_messages WHERE project_id=? AND request_id=? ORDER BY created_at,rowid", (project_id, request_id)).fetchall()
+        messages = [self._chat_message(row) for row in rows]
+        return (next((item for item in messages if item.role == "user"), None), next((item for item in messages if item.role == "assistant"), None))
 
     def get_project_memory(self, project_id: str) -> dict:
         with self._connect() as db:
