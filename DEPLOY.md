@@ -294,11 +294,29 @@ silently, while the server blocks deletion of running tasks/projects.
 | `REASONING_LLM_ENABLED` | false | Explicitly enable selective reasoning planning/review |
 | `REASONING_LLM_MODE` | complex | `complex`, `always`, or `off` |
 | `REASONING_LLM_MAX_TOKENS` | 1200 | Bounded output budget for each reasoning call |
+| `VISUAL_VERIFY_ENABLED` | false | Enable sequential vision-model review of browser screenshots after UI tasks |
 | `PLATFORM_USERNAME` | admin | Login username |
 
 ### Local-first hybrid routing
 
 When `LOCAL_LLM_MODEL` and `LOCAL_LLM_BASE_URL` are configured, OpenManus uses Ollama for normal coding and conversation. Simple create-and-verify file requests use a deterministic fast path and do not call an LLM. Vision tasks use `VISION_LLM_*`; heavy coding uses `HEAVY_CODING_LLM_*`; complex tasks can use `REASONING_LLM_*` for planning/review; and Ollama failures use `OLLAMA_FALLBACK_LLM_*`.
+
+### Phase B productivity features
+
+- **Artifacts:** changed workspace files are recorded with kind, MIME type, size,
+  checksum, task ID, and verification metadata. They remain downloadable from the
+  Files and Library panels.
+- **Research citations:** browser research stores the requested URL, page title,
+  bounded page excerpt, retrieval time, and citation records in the Evidence panel.
+- **Visual UI verification:** set `VISUAL_VERIFY_ENABLED=true` to capture the final
+  shared-browser screenshot and send it sequentially to the configured vision model
+  for an advisory UI review. Deterministic tests remain authoritative.
+- **Documents and spreadsheets:** uploaded and generated `.docx`, `.pdf`, `.xlsx`,
+  `.csv`, and related files are preserved as first-class workspace artifacts. The
+  agent can create them with its existing workspace tools; artifact metadata and
+  downloads are recorded uniformly.
+- **Project memory:** bounded, project-scoped memory is available in the Memory panel
+  and is included as untrusted context for future requests. Never store secrets in it.
 
 Set these variables when local-first mode is enabled:
 

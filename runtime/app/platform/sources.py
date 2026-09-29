@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -39,8 +40,22 @@ def extract_sources(evidence: Any) -> list[dict[str, Any]]:
             "title": metadata.get("title") or metadata.get("page_title"),
             "status": metadata.get("status") or metadata.get("http_status"),
             "accessed": metadata.get("accessed") or metadata.get("retrieved_at"),
+            "excerpt": str(metadata.get("excerpt") or metadata.get("text") or "")[:500],
         }
         found.append({key: value for key, value in record.items() if value not in (None, "")})
 
     walk(evidence)
     return found[:100]
+
+
+def citation_records(evidence: Any) -> list[dict[str, Any]]:
+    """Return citation-ready source records with retrieval metadata."""
+    accessed = datetime.now(timezone.utc).isoformat()
+    return [
+        {
+            **source,
+            "retrieved_at": source.get("accessed") or accessed,
+            "confidence": "source_recorded",
+        }
+        for source in extract_sources(evidence)
+    ]

@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Optional
 from app.config import config
 from app.llm import LLM
 from app.logger import logger
+from app.platform.artifacts import artifact_summary, discover_artifacts, workspace_baseline
 from app.platform.browser import BrowserManager
 from app.platform.coding_loop import CodingLoop
 from app.platform.reasoning import make_plan, reasoning_enabled, review_result, should_reason
@@ -16,6 +17,8 @@ from app.platform.llm_check import llm_problem
 from app.platform.classification import classify_request
 from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 from app.platform.store import PlatformStore
+from app.platform.sources import citation_records
+from app.platform.visual import visual_prompt, visual_verification_enabled
 from app.platform.verification import FailureClassifier, VerificationEngine, stable_operation_id
 
 AgentFactory = Callable[..., Awaitable[Any]]
@@ -305,6 +308,7 @@ class AgentOrchestrator:
             project = self.store.get_project(task.project_id)
             if not project:
                 raise RuntimeError("Project no longer exists")
+            artifact_baseline = workspace_baseline(project.workspace)
             async def emit(type_: str, message: str, data: dict) -> None:
                 task.last_heartbeat = datetime.now(timezone.utc)
                 if type_ == "assistant.delta" and task.first_token_ms is None:
@@ -359,6 +363,13 @@ class AgentOrchestrator:
                             text: document.body?.innerText || ''
                         })"""
                     )
+                    task.evidence["research"] = {
+                        "url": url,
+                        "title": research_snapshot.get("title", ""),
+                        "excerpt": str(research_snapshot.get("text", ""))[:2000],
+                    }
+                    task.evidence["citations"] = citation_records({"url": url, **research_snapshot})
+                    await self.store.save_task(task)
                 if browser_tool.session is not None:
                     await emit("browser.attached", f"Attached shared browser session {browser_tool.session.id}", {"session_id": browser_tool.session.id})
             if self.check_llm and (problem := llm_problem()) and not research_only:
@@ -475,6 +486,32 @@ class AgentOrchestrator:
                 agent.current_step = 0
                 await agent.run(repair_prompt)
                 validation_results = await loop.validate()
+
+            discovered = discover_artifacts(project.workspace, baseline=artifact_baseline, task_id=task.id)
+            if discovered:
+                task.artifacts.extend(discovered)
+                task.evidence["artifacts"] = artifact_summary(task.artifacts)
+                task.evidence["verification"] = VerificationEngine.task_completion(project.workspace, task.validation, task.artifacts)
+                await self.store.save_task(task)
+                await emit("artifacts.discovered", f"Recorded {len(discovered)} generated or changed artifact(s)", {"artifacts": discovered})
+
+            if (not research_only and visual_verification_enabled() and browser_tool is not None
+                    and browser_tool.session is not None and "vision" in config.llm):
+                try:
+                    screenshot = await browser_tool.execute(action="screenshot")
+                    if screenshot.base64_image:
+                        vision_llm = LLM(config_name="vision")
+                        visual_text = await vision_llm.ask_with_images(
+                            [{"role": "user", "content": visual_prompt(task.prompt)}],
+                            [f"data:image/jpeg;base64,{screenshot.base64_image}"],
+                            stream=False,
+                            temperature=0.1,
+                        )
+                        task.evidence["visual_verification"] = {"model": vision_llm.model, "review": visual_text[:8000]}
+                        await self.store.save_task(task)
+                        await emit("visual.review", "Visual UI review recorded; deterministic checks remain authoritative", task.evidence["visual_verification"])
+                except Exception as exc:
+                    await emit("visual.review_skipped", "Visual UI review was unavailable; continuing with deterministic verification", {"error": str(exc)[:500]})
 
             summary = agent.final_summary() if hasattr(agent, "final_summary") else "Task completed."
             task.result = summary
