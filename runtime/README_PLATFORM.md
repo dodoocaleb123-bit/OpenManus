@@ -24,6 +24,9 @@ for greetings or ordinary questions. On local Ollama, the control decision
 requests JSON mode and will retry once with a larger output budget if the
 model returns only reasoning or malformed JSON. Both attempts use DeepSeek,
 never a keyword classifier or substitute model.
+For a direct reply, DeepSeek's `respond` decision is sufficient: a numeric
+capability ID is not required. The platform records the generic conversation
+capability as bookkeeping and grants no tools on this route.
 Only when DeepSeek asks for workspace context does the server add bounded local
 file excerpts. Secret-like filenames, generated directories, and oversized
 content are excluded. A per-project Memory pane stores up to 6,000 characters

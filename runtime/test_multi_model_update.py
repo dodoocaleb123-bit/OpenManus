@@ -161,6 +161,26 @@ async def test_old_ollama_json_mode_rejection_retries_same_deepseek_model():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [
+    '{"route":"respond"}',
+    '{"route":"respond","needs_workspace_context":false,"summary":"Hello","capability_ids":[]}',
+    '{"route":"respond","needs_workspace_context":false,"summary":"Hello","capability_ids":[1]}',
+    '{"route":"respond","needs_workspace_context":false,"summary":"Hello","capability_ids":["167"]}',
+])
+async def test_deepseek_direct_reply_does_not_require_a_numeric_capability_id(decision):
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+
+        async def ask(self, messages, **kwargs):
+            return decision
+
+    plan = await make_authoritative_plan(FakeDeepSeek(), prompt="Hellooo")
+    assert plan["route"] == "respond"
+    assert plan["selected_capabilities"] == [166]
+    assert {step["handler"] for step in plan["steps"]} == {"deepseek"}
+
+
+@pytest.mark.asyncio
 async def test_deepseek_cannot_select_an_unimplemented_platform_capability_as_work():
     class FakeDeepSeek:
         model = "deepseek-r1:7b"

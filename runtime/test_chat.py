@@ -82,7 +82,9 @@ def test_greeting_uses_real_controller_path_and_deepseek_answer(tmp_path, monkey
         async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
             self.calls.append((messages, system_msgs, kwargs))
             if kwargs.get("response_format"):
-                return '{"route":"respond","needs_workspace_context":false,"summary":"Greet the user","intent":"conversation","capability_ids":[166],"handlers":[],"rationale":[]}'
+                # DeepSeek selected its own response route but did not emit a
+                # redundant numeric ID; this used to wrongly return HTTP 503.
+                return '{"route":"respond"}'
             return "Hello! How can I help?"
 
     monkeypatch.setattr("app.api.routes.LLM", DeepSeekGreeting)
@@ -92,6 +94,8 @@ def test_greeting_uses_real_controller_path_and_deepseek_answer(tmp_path, monkey
     assert response.status_code == 200, response.text
     assert response.json()["kind"] == "chat"
     assert response.json()["assistant"]["content"] == "Hello! How can I help?"
+    assert response.json()["plan"]["route"] == "respond"
+    assert response.json()["plan"]["control_unit_plan"]["selected_capabilities"] == [166]
     assert len(DeepSeekGreeting.calls) == 2
     assert DeepSeekGreeting.calls[0][0] == [{"role": "user", "content": "Hellooo"}]
     assert "Executable capability directory" not in DeepSeekGreeting.calls[0][1][0]["content"]
