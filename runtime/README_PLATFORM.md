@@ -167,6 +167,16 @@ inside it, without creating projects or sending data to an external API:
 docker exec openmanus python -m deploy.check_multimodel
 ```
 
+If the image under review is not deployed yet, build it as
+`openmanus-platform-review` from this branch and run a **disposable** test
+container instead, leaving your existing `openmanus` container and data volume
+untouched (run when no other Ollama task is active):
+
+```powershell
+docker build -t openmanus-platform-review .
+docker run --rm --add-host=host.docker.internal:host-gateway --env-file ..\.env openmanus-platform-review python -m deploy.check_multimodel
+```
+
 This sequentially checks the **exact configured tags**, asks all five local
 models for one answer (including a generated red image for Gemma), tests the
 real DeepSeek controller on `Hellooo`, and requests Ollama to unload each model

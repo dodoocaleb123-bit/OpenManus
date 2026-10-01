@@ -33,10 +33,15 @@ This branch removes stale image auto-selection, restores user authorization on r
 
 Sandbox verification: **198 runtime tests passed** (`pytest -q --ignore=tests/sandbox`), Python compilation and JavaScript syntax checks passed, registry JSON parsed, `git diff --check` passed, and headless Chromium displayed the acknowledged—not “verified”—user action label. Docker-dependent tests and any actual laptop model, memory, browser-preview, or remote GitHub scenario were **not run** here.
 
-Run the probe **after** configuring and pulling the five model tags on the Windows Ollama host and starting the rebuilt container:
+Run the probe **after** configuring and pulling the five model tags on the Windows Ollama host. To avoid switching the live source checkout or changing its `.env`, a PowerShell worktree and disposable container can test the review branch separately (only create the worktree once):
 
 ```powershell
-docker exec openmanus python -m deploy.check_multimodel
+cd C:\Users\LENOVO\OpenManus
+git fetch origin
+git worktree add --detach ..\OpenManus-review origin/review/zip-multimodel-audit-20261001
+cd ..\OpenManus-review\runtime
+docker build -t openmanus-platform-review .
+docker run --rm --add-host=host.docker.internal:host-gateway --env-file C:\Users\LENOVO\OpenManus\.env openmanus-platform-review python -m deploy.check_multimodel
 ```
 
 It prints only readiness, pass/fail and elapsed time; a nonzero exit means the five-role/greeting gate failed. The ZIP then requires a real current-image → sourced research → Llama design → Qwen build/preview → Gemma/Llama review → authorized GitHub workflow, along with SQLite-restart and 16 GB memory/latency tests on the laptop. Neither this script nor mocked pytest can assert those outcomes in advance.
