@@ -132,8 +132,20 @@ Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fa
 `PLATFORM_CHAT_MAX_TOKENS` (default `2400`), `REASONING_LLM_MODEL`,
 `REASONING_LLM_BASE_URL`, `REASONING_LLM_API_KEY_01` … `_10`,
 `REASONING_LLM_ENABLED=true`, `REASONING_LLM_MODE=complex|always|off`,
-`REASONING_LLM_MAX_TOKENS` (default `1200`), and `PLATFORM_DATA_DIR`
+`REASONING_LLM_MAX_TOKENS` (default `1200`), `RESEARCH_LLM_MODEL`,
+`RESEARCH_LLM_BASE_URL`, `RESEARCH_LLM_API_KEY` or `RESEARCH_LLM_API_KEY_01` … `_10`,
+`CREATIVITY_LLM_MODEL`, `CREATIVITY_LLM_BASE_URL`, `CREATIVITY_LLM_API_KEY` or
+`CREATIVITY_LLM_API_KEY_01` … `_10`, and `PLATFORM_DATA_DIR`
 (database + workspaces location, default `workspace/`).
+
+The intended local-first ownership is: **DeepSeek** plans and reviews complex
+work; **Qwen Coder** executes software, terminal, preview, and GitHub work;
+**Gemma 3** analyzes current-message images and screenshots; **Qwen2.5 3B**
+conducts source-grounded web research; and **Llama 3.2 3B** supplies creative
+direction and beautiful UI guidance. If no image reference is attached, the
+creativity specialist still produces a design brief from its own design
+knowledge. The platform, not an LLM, retains confirmation gates for login,
+payments, destructive actions, browser takeover, publishing, and pushes.
 
 ## Tests
 

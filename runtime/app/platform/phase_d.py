@@ -29,6 +29,28 @@ BUILTIN_CAPABILITIES: dict[str, dict[str, Any]] = {
         "provider": "ollama", "vision": False, "tools": False, "coding": False,
         "reasoning": "strong", "planning": True, "research": "limited",
     },
+    "qwen2.5:3b": {
+        "provider": "ollama", "vision": False, "tools": False, "coding": False,
+        "reasoning": "moderate", "planning": False, "research": "strong",
+    },
+    "llama3.2:3b": {
+        "provider": "ollama", "vision": False, "tools": False, "coding": False,
+        "reasoning": "moderate", "planning": False, "research": False,
+        "creativity": "strong", "design": "strong",
+    },
+}
+
+CAPABILITY_OWNERS: dict[str, str] = {
+    "reasoning": "deepseek",
+    "software_engineering": "qwen_coder",
+    "github": "qwen_coder",
+    "image_analysis": "gemma3",
+    "research": "qwen2.5_3b",
+    "creativity": "llama3.2_3b",
+    "beautiful_design": "llama3.2_3b",
+    "user_action": "user",
+    "protected_operation": "platform",
+    "unassigned": "deepseek",
 }
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -56,14 +78,15 @@ def utc_now() -> str:
 def capability_registry() -> list[dict[str, Any]]:
     """Return built-ins plus configured model profiles without exposing keys."""
     profiles = {name: {**value, "model": name, "source": "builtin"} for name, value in BUILTIN_CAPABILITIES.items()}
-    for env_name, role in (("LOCAL_LLM_MODEL", "local"), ("VISION_LLM_MODEL", "vision"), ("HEAVY_CODING_LLM_MODEL", "heavy_coding"), ("REASONING_LLM_MODEL", "reasoning")):
+    for env_name, role in (("LOCAL_LLM_MODEL", "local"), ("VISION_LLM_MODEL", "vision"), ("HEAVY_CODING_LLM_MODEL", "heavy_coding"), ("REASONING_LLM_MODEL", "reasoning"), ("RESEARCH_LLM_MODEL", "research"), ("CREATIVITY_LLM_MODEL", "creativity")):
         model = os.environ.get(env_name, "").strip()
         if model and model not in profiles:
             profiles[model] = {
                 "model": model, "provider": "configured", "source": "environment", "role": role,
                 "vision": role == "vision", "tools": role in {"local", "heavy_coding"},
                 "coding": role in {"local", "heavy_coding"}, "reasoning": "strong" if role == "reasoning" else "moderate",
-                "planning": role == "reasoning", "research": role in {"local", "vision"},
+                "planning": role == "reasoning", "research": role in {"local", "vision", "research"},
+                "creativity": role == "creativity", "design": role == "creativity",
             }
         elif model:
             profiles[model]["role"] = role

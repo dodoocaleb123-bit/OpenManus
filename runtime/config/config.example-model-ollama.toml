@@ -15,3 +15,35 @@ base_url = "http://localhost:11434/v1"                             # API endpoin
 api_key = "ollama"                                                 # Your API key for vision model
 max_tokens = 4096                                                  # Maximum number of tokens in the response
 temperature = 0.0                                                  # Controls randomness for vision model
+
+[llm.heavy_coding] # QWEN CODER EXECUTION:
+api_type = 'ollama'
+model = "qwen2.5-coder:7b"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+max_tokens = 4096
+temperature = 0.0
+
+[llm.reasoning] # DEEPSEEK ORCHESTRATION:
+api_type = 'ollama'
+model = "deepseek-r1:7b"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+max_tokens = 1200
+temperature = 0.0
+
+[llm.research] # QWEN RESEARCH:
+api_type = 'ollama'
+model = "qwen2.5:3b"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+max_tokens = 2400
+temperature = 0.2
+
+[llm.creativity] # LLAMA CREATIVITY AND DESIGN:
+api_type = 'ollama'
+model = "llama3.2:3b"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+max_tokens = 2200
+temperature = 0.5

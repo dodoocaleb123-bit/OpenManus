@@ -77,6 +77,21 @@ def test_entrypoint_renders_named_provider_pools(monkeypatch):
     assert '[llm.fallback]' in rendered and '"ollama", "ollama-two"' in rendered
 
 
+def test_entrypoint_renders_research_and_creativity_profiles(monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_MODEL", "qwen2.5-coder:7b")
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://host.docker.internal:11434/v1")
+    monkeypatch.setenv("LOCAL_LLM_API_KEY", "ollama")
+    monkeypatch.setenv("RESEARCH_LLM_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("RESEARCH_LLM_BASE_URL", "http://host.docker.internal:11434/v1")
+    monkeypatch.setenv("RESEARCH_LLM_API_KEY_01", "ollama")
+    monkeypatch.setenv("CREATIVITY_LLM_MODEL", "llama3.2:3b")
+    monkeypatch.setenv("CREATIVITY_LLM_BASE_URL", "http://host.docker.internal:11434/v1")
+    monkeypatch.setenv("CREATIVITY_LLM_API_KEY", "ollama")
+    rendered = entrypoint.render_llm_config()
+    assert '[llm.research]' in rendered and 'model = "qwen2.5:3b"' in rendered
+    assert '[llm.creativity]' in rendered and 'model = "llama3.2:3b"' in rendered
+
+
 def test_ollama_gemma3_models_are_detected_as_vision_capable(monkeypatch):
     monkeypatch.delenv("LLM_SUPPORTS_IMAGES", raising=False)
     assert model_supports_images("gemma3:4b") is True

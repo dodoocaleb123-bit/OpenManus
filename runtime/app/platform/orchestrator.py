@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import re
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskSta
 from app.platform.store import PlatformStore
 from app.platform.sources import citation_records
 from app.platform.visual import visual_prompt, visual_verification_enabled
-from app.platform.specialists import select_specialists
+from app.platform.specialists import SpecialistGateway, is_design_request, is_research_request, select_specialists
 from app.platform.verification import FailureClassifier, VerificationEngine, stable_operation_id
 
 AgentFactory = Callable[..., Awaitable[Any]]
@@ -33,11 +34,12 @@ def _is_browser_research_task(prompt: str) -> bool:
         text,
     )
     has_web_target = bool(re.search(r"https?://|\b(website|web\s+page|internet|online)\b", text))
+    broad_research = bool(re.search(r"\b(deep\s+research|conduct\s+research|investigate|literature\s+review|research\s+the\s+topic)\b", text))
     code_change = re.search(
         r"\b(build|create|implement|change|modify|edit|fix|refactor|add|remove|delete|update|write|code|test|commit|push|publish|deploy)\b",
         text,
     )
-    return bool(research_intent and has_web_target and not code_change)
+    return bool(research_intent and (has_web_target or broad_research) and not code_change)
 
 
 def _research_url(prompt: str) -> str | None:
@@ -210,9 +212,10 @@ class AgentOrchestrator:
         research_only = _is_browser_research_task(task.prompt)
         browser_task = bool(task.browser_session_id) or bool(re.search(r"\b(browser|screenshot|visual|navigate|click|page|website|internet|research)\b", task.prompt, re.IGNORECASE))
         complexity = _task_complexity(task.prompt, bool(task.browser_session_id))
-        # Text-only research can use the same local/default model shown in the
-        # UI. Reserve the dedicated vision profile for screenshots and image work.
-        provider_name = "default" if research_only else ("vision" if browser_task else "heavy_coding")
+        # Qwen Coder executes software changes. Research-only work is routed to
+        # the dedicated Qwen2.5 research model; design context is prepared by
+        # Llama before Qwen Coder receives the implementation prompt.
+        provider_name = "research" if research_only and "research" in config.llm else ("heavy_coding" if "heavy_coding" in config.llm else "default")
         cloud_llm = LLM(config_name=provider_name) if (browser_task or complexity == "heavy") and provider_name in config.llm else None
         return await PlatformManus.create_for_project(
             project_name=project.name,
@@ -345,9 +348,11 @@ class AgentOrchestrator:
             task.evidence["specialists"] = select_specialists(
                 intent=classification.get("intent", "conversation"),
                 complexity=classification.get("complexity", "normal"),
-                has_images=bool(classification.get("has_images")),
+                has_images=bool(classification.get("has_images")) or bool((task.plan or {}).get("attachment_ids")),
                 browser=bool(classification.get("browser")),
                 requires_artifacts=bool(re.search(r"\b(report|document|spreadsheet|csv|xlsx|pdf|artifact)\b", task.prompt, re.IGNORECASE)),
+                design=is_design_request(task.prompt) or "design" in (task.plan or {}).get("capabilities", []),
+                research=is_research_request(task.prompt) or "research_browser" in (task.plan or {}).get("capabilities", []),
             )
             task.evidence["budget"] = {
                 "max_steps": _task_step_budget(task.prompt, bool(task.browser_session_id)),
@@ -425,6 +430,52 @@ class AgentOrchestrator:
             project_memory = await asyncio.to_thread(self.store.get_project_memory, task.project_id)
             await self.store.save_checkpoint(task.id, "execution_started", {"intent": task.evidence.get("classification", {}), "max_steps": max_steps, "max_repair_cycles": max_cycles})
             reasoning_plan: dict[str, Any] | None = None
+            specialist_handoff: dict[str, Any] = {}
+            gateway = SpecialistGateway(config, emit=emit)
+            design_requested = is_design_request(task.prompt) or "design" in (task.plan or {}).get("capabilities", [])
+            if design_requested and "creativity" in config.llm:
+                try:
+                    specialist_handoff["design"] = await gateway.ask_json(
+                        "designer",
+                        instruction=(
+                            "Act as the creative and UI design specialist. Produce a practical design brief for the coding agent. "
+                            "Prefer a coherent visual system over generic decoration: audience, information hierarchy, layout, typography, "
+                            "color tokens with accessible contrast, spacing, responsive behavior, interaction states, and concrete component guidance. "
+                            "If no image reference is supplied, use your own design expertise and do not ask the user for one. Return JSON with "
+                            "keys: design_direction, palette, typography, layout, components, responsive_rules, quality_checks."
+                        ),
+                        context={"user_request": task.prompt, "project": project.name, "has_image_reference": bool((task.plan or {}).get("attachment_ids"))},
+                        max_tokens=2200,
+                    )
+                except Exception as exc:
+                    await emit("specialist.skipped", "Creativity specialist unavailable; Qwen will use the built-in design guidance", {"role": "designer", "error": str(exc)[:500]})
+
+            attachment_ids = set((task.plan or {}).get("attachment_ids", []))
+            if design_requested and attachment_ids and "vision" in config.llm:
+                try:
+                    uploads = await asyncio.to_thread(self.store.list_uploaded_files, task.project_id)
+                    image_urls: list[str] = []
+                    image_names: list[str] = []
+                    for upload in uploads:
+                        if upload.id not in attachment_ids or not (upload.content_type or "").startswith("image/"):
+                            continue
+                        path = Path(upload.stored_path).resolve()
+                        if not path.is_file() or path.stat().st_size > 5 * 1024 * 1024:
+                            continue
+                        image_urls.append(f"data:{upload.content_type or 'image/jpeg'};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}")
+                        image_names.append(upload.filename)
+                    if image_urls:
+                        specialist_handoff["visual_reference"] = await gateway.analyze_images(
+                            prompt=(
+                                "Analyze the attached current-message design reference for the coding agent. Extract visible layout, hierarchy, "
+                                "component patterns, typography, spacing, color relationships, responsive clues, and important affordances. "
+                                "Do not copy proprietary text or assets; describe reusable design decisions."
+                            ),
+                            image_urls=image_urls,
+                            context={"filenames": image_names, "user_request": task.prompt},
+                        )
+                except Exception as exc:
+                    await emit("specialist.skipped", "Vision design-reference analysis unavailable; continuing without it", {"role": "vision", "error": str(exc)[:500]})
             classified_complexity = task.evidence.get("classification", {}).get("complexity", _task_complexity(task.prompt, bool(task.browser_session_id)))
             if not research_only and reasoning_enabled() and should_reason(task.prompt, complexity=classified_complexity) and "reasoning" in config.llm:
                 try:
@@ -454,6 +505,7 @@ class AgentOrchestrator:
                 f"RECENT PROJECT CONVERSATION:\n{conversation}\n\n"
                 f"CURRENT USER MESSAGE:\n{task.prompt}\n\n"
                 + (f"ADVISORY REASONING PLAN (inspect the workspace and correct it if needed):\n{reasoning_plan}\n\n" if reasoning_plan else "")
+                + (f"SPECIALIST HANDOFFS (advisory; Qwen remains responsible for implementation):\n{specialist_handoff}\n\n" if specialist_handoff else "")
                 + research_instructions
                 + "UNIFIED CONVERSATION REQUIREMENT: Treat this as one continuous project conversation. "
                 "First understand the user's intent. If the user is asking a question, requesting an explanation, "

@@ -25,7 +25,11 @@ Configuration sources, in order of precedence:
        LLM_VISION_BASE_URL   optional   defaults to LLM_BASE_URL
        LLM_VISION_API_KEY    optional   defaults to LLM_API_KEY
        REASONING_LLM_MODEL, REASONING_LLM_BASE_URL, REASONING_LLM_API_KEY_01 … _10
-                              optional selective planning/review provider
+                              optional reasoning provider
+       RESEARCH_LLM_MODEL, RESEARCH_LLM_BASE_URL, RESEARCH_LLM_API_KEY_01 … _10
+                              optional research provider
+       CREATIVITY_LLM_MODEL, CREATIVITY_LLM_BASE_URL, CREATIVITY_LLM_API_KEY_01 … _10
+                              optional creativity/design provider
 
 3. An existing ``config/config.toml`` (e.g. bind-mounted) is left untouched.
 
@@ -74,6 +78,10 @@ def key_pool(name: str) -> list[str]:
     values: list[str] = []
     raw = os.environ.get(name, "")
     values.extend(item.strip() for item in raw.replace("\n", ",").split(",") if item.strip())
+    # ``..._API_KEYS`` has a singular companion ``..._API_KEY``.
+    single_name = name[:-1] if name.endswith("_KEYS") else name
+    if os.environ.get(single_name, "").strip():
+        values.insert(0, os.environ[single_name].strip())
 
     # Docker .env files are clearer and safer when each secret occupies its own
     # line. Support both ..._API_KEY_01 and the older ..._API_KEYS_01 spelling.
@@ -140,6 +148,8 @@ def render_llm_config() -> str:
     append_pool(lines, "vision", env("VISION_LLM_MODEL"), env("VISION_LLM_BASE_URL"), key_pool("VISION_LLM_API_KEYS"), max_tokens, temperature)
     append_pool(lines, "heavy_coding", env("HEAVY_CODING_LLM_MODEL"), env("HEAVY_CODING_LLM_BASE_URL"), key_pool("HEAVY_CODING_LLM_API_KEYS"), max_tokens, temperature)
     append_pool(lines, "reasoning", env("REASONING_LLM_MODEL"), env("REASONING_LLM_BASE_URL"), key_pool("REASONING_LLM_API_KEYS"), max_tokens, temperature)
+    append_pool(lines, "research", env("RESEARCH_LLM_MODEL"), env("RESEARCH_LLM_BASE_URL"), key_pool("RESEARCH_LLM_API_KEYS"), max_tokens, temperature)
+    append_pool(lines, "creativity", env("CREATIVITY_LLM_MODEL"), env("CREATIVITY_LLM_BASE_URL"), key_pool("CREATIVITY_LLM_API_KEYS"), max_tokens, temperature)
     append_pool(lines, "fallback", env("OLLAMA_FALLBACK_LLM_MODEL"), env("OLLAMA_FALLBACK_LLM_BASE_URL"), key_pool("OLLAMA_FALLBACK_LLM_API_KEYS"), max_tokens, temperature)
 
     # Backward-compatible migration path for existing local-first deployments.

@@ -38,7 +38,7 @@ from app.platform.store import PlatformStore
 from app.platform.automation import AutomationStore, ProcessManager, parse_preview_command, verify_webhook, wait_for_port
 from app.platform.terminal import ProjectTerminalManager
 from app.platform.parallel_research import parallel_research
-from app.platform.specialists import select_specialists
+from app.platform.specialists import SpecialistGateway, is_design_request, is_research_request, select_specialists
 
 # Proxies (Render included) close idle HTTP connections; a comment frame every
 # 20s keeps the stream alive. Streams also end after ~14 minutes and the
@@ -210,7 +210,7 @@ def is_build_request(text: str) -> bool:
     if re.search(r"^(can|could|would|will|are you able|is it possible)\b", value, re.IGNORECASE) and re.search(r"\?\s*$", value) and not re.search(r"\b(please|go ahead|start|now|in the project|for me)\b", value, re.IGNORECASE):
         return False
     return bool(
-        re.search(r"\b(build|create|implement|change|modify|edit|fix|refactor|add|remove|delete|update|write|code|test|commit|push|publish|deploy|branch|pull request|pr|research|browse|website|internet|navigate)\b", value, re.IGNORECASE)
+        re.search(r"\b(build|create|implement|change|modify|edit|fix|refactor|add|remove|delete|update|write|code|test|commit|push|publish|deploy|branch|pull request|pr|research|browse|website|internet|navigate|design|prototype)\b", value, re.IGNORECASE)
         or re.search(r"\b(connect|clone)\b.*\b(github|repository|repo)\b|\b(github|repository|repo)\b.*\b(connect|clone|pull|push)\b", value, re.IGNORECASE)
     )
 
@@ -220,6 +220,8 @@ def unified_capability_plan(text: str, *, has_attachments: bool = False, has_bro
     value = text.strip()
     lowered = value.casefold()
     capabilities: list[str] = []
+    if is_design_request(lowered):
+        capabilities.append("design")
     if has_attachments or re.search(r"\b(image|picture|photo|screenshot|pdf|document|diagram|file)\b", lowered):
         capabilities.append("vision")
     if has_browser_session or re.search(r"\b(browse|browser|website|webpage|internet|online|research|navigate|click|type into|search the web)\b|https?://", lowered):
@@ -238,6 +240,8 @@ def unified_capability_plan(text: str, *, has_attachments: bool = False, has_bro
         intent = "multi_capability_task" if is_task else "multi_capability_question"
     elif capabilities[0] == "research_browser":
         intent = "research" if is_task else "research_question"
+    elif capabilities[0] == "design":
+        intent = "design_task" if is_task else "design_question"
     elif capabilities[0] == "engineering":
         intent = "engineering_task" if is_task else "engineering_question"
     elif capabilities[0] == "vision":
@@ -251,6 +255,8 @@ def unified_capability_plan(text: str, *, has_attachments: bool = False, has_bro
         steps.append("Inspect the workspace, make the requested changes, and run relevant checks")
     if "github" in capabilities:
         steps.append("Verify repository state and report the exact GitHub result")
+    if "design" in capabilities:
+        steps.append("Use the creativity model's design system and visual-quality rules; use Gemma only when a current image reference exists")
     if is_task:
         steps.append("Validate the result, recover from failures when possible, and report evidence")
     else:
@@ -261,6 +267,14 @@ def unified_capability_plan(text: str, *, has_attachments: bool = False, has_bro
         "requires_task": is_task,
         "requires_plan": is_task or len(capabilities) > 1,
         "steps": steps,
+        "handlers": {
+            "reasoning": "deepseek",
+            "design": "llama3.2_3b",
+            "research": "qwen2.5_3b",
+            "vision": "gemma3",
+            "engineering": "qwen_coder",
+            "github": "qwen_coder",
+        },
     }
 
 
@@ -871,6 +885,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         text = body.message.strip()
         mode = body.mode
         plan = unified_capability_plan(text, has_attachments=bool(body.attachment_ids), has_browser_session=bool(body.browser_session_id))
+        # Attachments belong to this message only. Persist their IDs with the
+        # task plan so background orchestration never falls back to older
+        # project uploads.
+        plan["attachment_ids"] = list(body.attachment_ids)
         if mode == "answer":
             plan.update(intent="answer_only", requires_task=False, requires_plan=False)
         elif mode == "inspect":

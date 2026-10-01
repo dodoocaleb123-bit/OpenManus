@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from app.platform.automation import AutomationStore, detect_preview_command, parse_preview_command, verify_webhook
 from app.server import create_app
-from app.platform.specialists import bounded_gather, select_specialists
+from app.platform.specialists import bounded_gather, is_design_request, is_research_request, select_specialists
+from app.platform.orchestrator import _is_browser_research_task
+from app.api.routes import unified_capability_plan
 
 
 def test_specialist_selection_matches_multimodal_task():
@@ -30,6 +32,26 @@ def test_bounded_gather_never_exceeds_limit():
         return value * 2
     assert asyncio.run(bounded_gather(range(8), worker, limit=2)) == [i * 2 for i in range(8)]
     assert peak <= 2
+
+
+def test_multimodel_capability_plan_assigns_design_and_research_owners():
+    design = unified_capability_plan("Build a beautiful responsive landing page", has_attachments=False)
+    assert "design" in design["capabilities"]
+    assert design["handlers"]["design"] == "llama3.2_3b"
+    research = unified_capability_plan("Conduct deep research on local LLM deployment", has_attachments=False)
+    assert "research_browser" in research["capabilities"]
+    assert research["handlers"]["research"] == "qwen2.5_3b"
+    assert is_design_request("make the dashboard beautiful")
+    assert is_research_request("conduct deep research on this topic")
+    assert _is_browser_research_task("Conduct deep research on local LLM deployment")
+
+
+def test_specialist_selection_includes_design_and_research_handoffs():
+    roles = {item["name"]: item["model_config"] for item in select_specialists(intent="engineering", complexity="heavy", design=True, research=True)}
+    assert roles["planner"] == "reasoning"
+    assert roles["researcher"] == "research"
+    assert roles["designer"] == "creativity"
+    assert roles["coder"] == "heavy_coding"
 
 
 def test_automation_store_persists_schedule_and_connector(tmp_path: Path):
