@@ -151,7 +151,7 @@ async def make_authoritative_plan(
     return plan
 
 
-async def make_plan(llm: LLM, *, prompt: str, conversation: str, project_name: str, workspace: str) -> dict[str, Any]:
+async def make_plan(llm: LLM, *, prompt: str, conversation: str, workspace: str) -> dict[str, Any]:
     """Ask the reasoning model for an advisory plan; never execute its output."""
     response = await llm.ask(
         [
@@ -163,8 +163,10 @@ async def make_plan(llm: LLM, *, prompt: str, conversation: str, project_name: s
                     "Return ONLY valid JSON with keys: summary (string), intent (string), "
                     "steps (array of strings), affected_areas (array of strings), risks "
                     "(array of strings), tests (array of strings), requires_confirmation (boolean).\n\n"
-                    f"Project: {project_name}\nWorkspace: {workspace}\n"
-                    f"Recent conversation:\n{conversation[-12000:]}\n\nUser request:\n{prompt}"
+                    "The project title is UI metadata only. Do not infer the task topic, domain, or intent from it.\n"
+                    f"Workspace: {workspace}\n"
+                    f"Relevant prior task context (only if explicitly referenced):\n{conversation[-12000:]}\n\n"
+                    f"CURRENT USER REQUEST (authoritative):\n{prompt}"
                 ),
             }
         ],

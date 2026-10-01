@@ -33,6 +33,11 @@ SECRET_FILE_RE = re.compile(r"(?i)(secret|credential|password|private[-_]?key|id
 MAX_FILES_SCANNED = 1000
 MAX_FILE_BYTES = 100_000
 MAX_SCAN_BYTES = 3_000_000
+PRIOR_CONTEXT_RE = re.compile(
+    r"\b(?:continue|previous|earlier|before|above|prior|same|again|as\s+we\s+discussed|"
+    r"what\s+i\s+(?:said|sent)|that\s+(?:project|page|file|image|design|answer|task))\b",
+    re.IGNORECASE,
+)
 
 
 def _query_tokens(query: str) -> set[str]:
@@ -145,3 +150,19 @@ def build_workspace_context(
         sections.append(section)
         remaining -= len(section)
     return "\n".join(sections)
+
+
+def task_conversation_context(messages: Iterable[object], current_prompt: str, task_id: str) -> str:
+    """Return current-task history unless the user explicitly requests continuity."""
+    items = list(messages)
+    current = [item for item in items if getattr(item, "task_id", None) == task_id]
+    if not PRIOR_CONTEXT_RE.search(current_prompt):
+        selected = current
+    else:
+        prior = [item for item in items if getattr(item, "task_id", None) != task_id]
+        selected = prior[-10:] + current
+    return "\n".join(
+        f"{getattr(item, 'role', 'unknown').upper()}: {getattr(item, 'content', '')}"
+        for item in selected
+        if getattr(item, "content", None)
+    )[-30000:] or "(no prior task conversation)"

@@ -27,3 +27,36 @@ def test_context_excludes_secrets_symlinks_and_generated_directories(tmp_path):
     assert "safe.py" in context
     assert "not-for-context" not in context
     assert "generated.js" not in context
+
+
+def test_task_conversation_context_isolates_unrelated_tasks():
+    from types import SimpleNamespace
+    from app.platform.context import task_conversation_context
+
+    messages = [
+        SimpleNamespace(task_id="math-task", role="user", content="Solve the algebra problem."),
+        SimpleNamespace(task_id="math-task", role="assistant", content="The answer is 42."),
+        SimpleNamespace(task_id="beauty-task", role="user", content="Create a beauty cosmetics webpage."),
+    ]
+
+    context = task_conversation_context(messages, "Create a beauty cosmetics webpage.", "beauty-task")
+
+    assert "beauty cosmetics" in context
+    assert "algebra" not in context
+    assert "42" not in context
+
+
+def test_task_conversation_context_allows_explicit_continuity():
+    from types import SimpleNamespace
+    from app.platform.context import task_conversation_context
+
+    messages = [
+        SimpleNamespace(task_id="old-task", role="user", content="Use the pink cosmetics palette."),
+        SimpleNamespace(task_id="old-task", role="assistant", content="The palette uses blush and rose tones."),
+        SimpleNamespace(task_id="new-task", role="user", content="Continue the previous design."),
+    ]
+
+    context = task_conversation_context(messages, "Continue the previous design.", "new-task")
+
+    assert "pink cosmetics palette" in context
+    assert "Continue the previous design" in context

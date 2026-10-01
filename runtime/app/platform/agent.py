@@ -290,7 +290,7 @@ You don't just generate code: you build it, run it, test it, look at it, diagnos
 and verify the result before reporting completion.
 
 PROJECT
-- Name: {project_name}
+- The project title is UI metadata only. Never infer the task topic, domain, or required behavior from it.
 - Workspace (your working directory): {workspace}
 - GitHub repository: {repository}
 - Current branch: {branch}
