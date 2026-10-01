@@ -657,6 +657,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 "classic_fallback_configured": bool(os.getenv("GITHUB_CLASSIC_TOKEN")),
             },
             "auth": {"enabled": bool(os.getenv("PLATFORM_PASSWORD"))},
+            "deepseek_bridge": {
+                "enabled": os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"},
+                "configured": "reasoning" in config.llm and reasoning_enabled(),
+                "model": model_status_from_env()[2].get("model") if len(model_status_from_env()) > 2 else None,
+            },
             "limits": {
                 "max_concurrent_tasks": _env_int("PLATFORM_MAX_CONCURRENT_TASKS", 0),
                 "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
@@ -973,8 +978,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 return {"kind": "task", "plan": plan, "user": user_message, "assistant": assistant_message, "task": task}
             user_message = existing_user or await asyncio.to_thread(store.add_chat_message, project_id, "user", text, request_id=request_id)
 
+            bridge_enabled = os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"}
+            bridge_status = {"enabled": bridge_enabled, "configured": "reasoning" in config.llm and reasoning_enabled(), "status": "not_run"}
             bridge_note = ""
-            if "reasoning" in config.llm and reasoning_enabled() and os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"}:
+            if bridge_status["configured"] and bridge_enabled:
                 try:
                     bridge_llm = LLM(config_name="reasoning")
                     bridge_response = await bridge_llm.ask(
@@ -989,8 +996,12 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                         max_tokens=700,
                     )
                     bridge_note = "\n\nDEEPSEEK CONTROL-UNIT PREFLIGHT (routing guidance only; platform evidence remains authoritative):\n" + strip_think_tags(str(bridge_response))[:6000]
+                    bridge_status.update(status="completed", model=bridge_llm.model)
                 except Exception as exc:
                     bridge_note = f"\n\nDEEPSEEK PREFLIGHT UNAVAILABLE: {str(exc)[:300]}. Continue using the deterministic platform route."
+                    bridge_status.update(status="failed", error=str(exc)[:300])
+            plan["deepseek_preflight"] = {key: value for key, value in bridge_status.items() if key != "error" or bridge_status.get("status") == "failed"}
+            audit("deepseek.preflight", project_id=project_id, status=bridge_status.get("status"), model=bridge_status.get("model"))
 
             async def save_assistant_reply(content: str, time_to_first_token_ms: int | None = None):
                 return await asyncio.to_thread(

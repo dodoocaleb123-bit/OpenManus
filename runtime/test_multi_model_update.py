@@ -96,3 +96,7 @@ def test_registry_and_model_status_endpoints(tmp_path: Path):
         roles = {item["role"] for item in status.json()["models"]}
         assert roles == {"qwen_coder", "gemma3", "deepseek", "qwen2.5_3b", "llama3.2_3b"}
         assert "api_key" not in status.text.lower()
+        platform_status = client.get("/api/status")
+        assert platform_status.status_code == 200
+        assert "deepseek_bridge" in platform_status.json()
+        assert '"api_key":' not in platform_status.text.lower()
