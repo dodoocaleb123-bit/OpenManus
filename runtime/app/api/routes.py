@@ -23,6 +23,7 @@ from tenacity import RetryError
 
 from app.config import config
 from app.llm import LLM, ThinkTagFilter, strip_think_tags
+from app.platform.reasoning import reasoning_enabled
 from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.context import build_workspace_context
@@ -39,6 +40,9 @@ from app.platform.automation import AutomationStore, ProcessManager, parse_previ
 from app.platform.terminal import ProjectTerminalManager
 from app.platform.parallel_research import parallel_research
 from app.platform.specialists import SpecialistGateway, is_design_request, is_research_request, select_specialists
+from app.platform.capability_registry import capabilities as registry_capabilities, model_status_from_env, registry_version
+from app.platform.control_unit import ControlUnit
+from app.platform.model_health import check_all_model_roles
 
 # Proxies (Render included) close idle HTTP connections; a comment frame every
 # 20s keeps the stream alive. Streams also end after ~14 minutes and the
@@ -216,7 +220,12 @@ def is_build_request(text: str) -> bool:
 
 
 def unified_capability_plan(text: str, *, has_attachments: bool = False, has_browser_session: bool = False) -> dict:
-    """Return the shared intent contract used by chat, build, browser, and vision flows."""
+    """Return the shared DeepSeek control-unit intent contract.
+
+    The deterministic classifier remains as a compatibility layer for existing
+    clients, while the registry-backed plan is now authoritative for task
+    routing and provenance.
+    """
     value = text.strip()
     lowered = value.casefold()
     capabilities: list[str] = []
@@ -261,7 +270,7 @@ def unified_capability_plan(text: str, *, has_attachments: bool = False, has_bro
         steps.append("Validate the result, recover from failures when possible, and report evidence")
     else:
         steps.append("Compose a clear answer and state limitations or sources")
-    return {
+    legacy_plan = {
         "intent": intent,
         "capabilities": capabilities,
         "requires_task": is_task,
@@ -276,6 +285,19 @@ def unified_capability_plan(text: str, *, has_attachments: bool = False, has_bro
             "github": "qwen_coder",
         },
     }
+    control_plan = ControlUnit().plan(
+        value,
+        attachment_ids=["current-attachment"] if has_attachments else [],
+        browser_session_id="current-browser" if has_browser_session else None,
+        mode="auto",
+    )
+    legacy_plan["control_unit_plan"] = control_plan
+    legacy_plan["registry_version"] = control_plan["registry_version"]
+    legacy_plan["steps"] = [
+        f"Step {index}: capability {step['capability_id']} via {step['handler']}"
+        for index, step in enumerate(control_plan["steps"], 1)
+    ] + legacy_plan["steps"]
+    return legacy_plan
 
 
 class RepositoryPublish(BaseModel):
@@ -609,6 +631,21 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
     async def health():
         return {"status": "ok", "service": "openmanus-platform"}
 
+    @router.get("/capabilities/registry")
+    async def capability_registry_endpoint():
+        """Return the authoritative registry without secrets or model prompts."""
+        return {"schema_version": registry_version(), "count": len(registry_capabilities()), "capabilities": registry_capabilities()}
+
+    @router.get("/capabilities/models/status")
+    async def model_role_status():
+        """Return safe role/model configuration state; never return API keys."""
+        return {"models": model_status_from_env(), "execution_policy": {"default_concurrency": 1, "max_concurrency": _env_int("PLATFORM_MAX_MODEL_CONCURRENCY", 1), "lazy_loading": True}}
+
+    @router.get("/capabilities/models/health")
+    async def model_role_health():
+        """Check configured role endpoints and model tags without generating tokens."""
+        return {"models": await check_all_model_roles(), "inference_policy": "sequential_by_default"}
+
     @router.get("/status")
     async def platform_status():
         """Setup status for the UI: is the model configured, is GitHub connected."""
@@ -889,6 +926,10 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         # task plan so background orchestration never falls back to older
         # project uploads.
         plan["attachment_ids"] = list(body.attachment_ids)
+        if isinstance(plan.get("control_unit_plan"), dict):
+            plan["control_unit_plan"]["attachment_ids"] = list(body.attachment_ids)
+            for step in plan["control_unit_plan"].get("steps", []):
+                step.setdefault("input", {})["attachment_ids"] = list(body.attachment_ids)
         if mode == "answer":
             plan.update(intent="answer_only", requires_task=False, requires_plan=False)
         elif mode == "inspect":
@@ -1095,7 +1136,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 ),
             }
             try:
-                chat_llm = LLM(config_name="vision") if image_uploads and "vision" in config.llm else LLM()
+                if image_uploads and "vision" in config.llm:
+                    chat_llm = LLM(config_name="vision")
+                elif "reasoning" in config.llm and reasoning_enabled():
+                    # DeepSeek is the conversational bridge for text requests;
+                    # tool execution remains platform-controlled.
+                    chat_llm = LLM(config_name="reasoning")
+                else:
+                    chat_llm = LLM()
                 # format_messages removes internal base64 fields while preparing
                 # a request. Keep an untouched copy so a bounded continuation
                 # can include the image again if the provider cuts off early.

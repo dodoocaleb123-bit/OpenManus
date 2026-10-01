@@ -24,17 +24,22 @@ _RISK_RE = re.compile(
 
 
 def reasoning_enabled() -> bool:
-    """Require explicit opt-in so adding the profile never slows all tasks."""
-    return os.environ.get("REASONING_LLM_ENABLED", "").strip().casefold() in {
-        "1", "true", "yes", "on"
-    }
+    """Enable the DeepSeek control unit by default when configured.
+
+    Deployments can explicitly disable it with ``REASONING_LLM_ENABLED=false``
+    for constrained hardware or diagnostics.
+    """
+    value = os.environ.get("REASONING_LLM_ENABLED", "").strip().casefold()
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return value in {"1", "true", "yes", "on"} or bool(os.environ.get("REASONING_LLM_MODEL"))
 
 
 def should_reason(prompt: str, *, complexity: str = "normal") -> bool:
     """Use reasoning only for complex, risky, or explicitly planning requests."""
     if not reasoning_enabled():
         return False
-    mode = os.environ.get("REASONING_LLM_MODE", "complex").strip().casefold()
+    mode = os.environ.get("REASONING_LLM_MODE", "always").strip().casefold()
     if mode in {"off", "disabled", "never"}:
         return False
     if mode in {"always", "all"}:

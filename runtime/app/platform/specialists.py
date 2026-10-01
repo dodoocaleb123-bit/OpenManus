@@ -11,9 +11,11 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
 from app.llm import LLM
+from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, validate_result
 
 T = TypeVar("T")
 
@@ -100,6 +102,18 @@ def _clip(value: Any, limit: int = 12000) -> str:
     return str(value or "")[:limit]
 
 
+def design_skill_context(limit_per_skill: int = 3500) -> dict[str, str]:
+    """Load normalized design guidance without embedding every skill in every call."""
+    root = Path(__file__).resolve().parents[1] / "skills" / "design"
+    names = ("frontend-design.md", "ui-ux-pro-max.md", "emil-design-eng.md", "impeccable.md", "taste.md", "sleek-design-mobile-apps.md")
+    result: dict[str, str] = {}
+    for name in names:
+        path = root / name
+        if path.is_file():
+            result[name] = path.read_text(encoding="utf-8")[:limit_per_skill]
+    return result
+
+
 class SpecialistGateway:
     """Bounded, auditable calls to configured specialist models."""
 
@@ -120,6 +134,8 @@ class SpecialistGateway:
     async def ask_json(self, role: str, *, instruction: str, context: dict[str, Any] | None = None, max_tokens: int = 1800) -> dict[str, Any]:
         llm = self.llm(role)
         await self._event("specialist.started", f"{role} specialist started", {"role": role, "model": llm.model})
+        if role == "designer":
+            context = {**(context or {}), "design_skill_resources": design_skill_context()}
         response = await llm.ask(
             [{"role": "user", "content": instruction + "\n\nCONTEXT:\n" + json.dumps(context or {}, ensure_ascii=False, default=str)[:30000]}],
             stream=False,
@@ -140,6 +156,29 @@ class SpecialistGateway:
         result = {"role": "vision", "model": llm.model, "raw_response": _clip(response), "analysis": _clip(response), "context": context or {}}
         await self._event("specialist.completed", "vision specialist completed", {"role": "vision", "model": llm.model, "result": result})
         return result
+
+    async def ask_handoff(self, request: HandoffRequest, *, max_tokens: int = 1800) -> HandoffResult:
+        """Execute a structured specialist request without granting platform tools."""
+        role = {"qwen_coder": "coder", "gemma3": "vision", "deepseek": "planner", "qwen2.5_3b": "researcher", "llama3.2_3b": "designer"}.get(request.handler, request.handler)
+        result = await self.ask_json(
+            role,
+            instruction=("Return a structured result for this capability. Do not claim tool or file completion "
+                         "without evidence. Required output schema: " + json.dumps(request.required_output_schema or {"type": "object"})),
+            context=request.as_dict(),
+            max_tokens=max_tokens,
+        )
+        handoff = HandoffResult(
+            status=HandoffStatus.COMPLETED if "parse_error" not in result else HandoffStatus.FAILED,
+            request=request,
+            structured_result=result,
+            summary=str(result.get("summary") or result.get("raw_response") or "")[:2000],
+            evidence_refs=list(result.get("evidence_refs") or result.get("evidence") or []),
+            sources=list(result.get("sources") or []),
+            verification=list(result.get("verification") or []),
+            error={"message": result.get("parse_error")} if result.get("parse_error") else None,
+        )
+        validate_result(handoff)
+        return handoff
 
 
 async def bounded_gather(items: Iterable[T], worker: Callable[[T], Awaitable[Any]], *, limit: int = 3) -> list[Any]:

@@ -145,11 +145,13 @@ def render_llm_config() -> str:
 
     max_tokens = toml_num("LLM_MAX_TOKENS", env("LLM_MAX_TOKENS") or "8192", int)
     temperature = toml_num("LLM_TEMPERATURE", env("LLM_TEMPERATURE") or "1.0", float)
-    append_pool(lines, "vision", env("VISION_LLM_MODEL"), env("VISION_LLM_BASE_URL"), key_pool("VISION_LLM_API_KEYS"), max_tokens, temperature)
+    role_base = local_base or base_url
+    role_key = local_key if local_model else api_key
+    append_pool(lines, "vision", env("VISION_LLM_MODEL") or "gemma3:4b", env("VISION_LLM_BASE_URL") or role_base, key_pool("VISION_LLM_API_KEYS") or [role_key], max_tokens, temperature)
     append_pool(lines, "heavy_coding", env("HEAVY_CODING_LLM_MODEL"), env("HEAVY_CODING_LLM_BASE_URL"), key_pool("HEAVY_CODING_LLM_API_KEYS"), max_tokens, temperature)
-    append_pool(lines, "reasoning", env("REASONING_LLM_MODEL"), env("REASONING_LLM_BASE_URL"), key_pool("REASONING_LLM_API_KEYS"), max_tokens, temperature)
-    append_pool(lines, "research", env("RESEARCH_LLM_MODEL"), env("RESEARCH_LLM_BASE_URL"), key_pool("RESEARCH_LLM_API_KEYS"), max_tokens, temperature)
-    append_pool(lines, "creativity", env("CREATIVITY_LLM_MODEL"), env("CREATIVITY_LLM_BASE_URL"), key_pool("CREATIVITY_LLM_API_KEYS"), max_tokens, temperature)
+    append_pool(lines, "reasoning", env("REASONING_LLM_MODEL") or "deepseek-r1:7b", env("REASONING_LLM_BASE_URL") or role_base, key_pool("REASONING_LLM_API_KEYS") or [role_key], max_tokens, temperature)
+    append_pool(lines, "research", env("RESEARCH_LLM_MODEL") or "qwen2.5:3b", env("RESEARCH_LLM_BASE_URL") or role_base, key_pool("RESEARCH_LLM_API_KEYS") or [role_key], max_tokens, temperature)
+    append_pool(lines, "creativity", env("CREATIVITY_LLM_MODEL") or "llama3.2:3b", env("CREATIVITY_LLM_BASE_URL") or role_base, key_pool("CREATIVITY_LLM_API_KEYS") or [role_key], max_tokens, temperature)
     append_pool(lines, "fallback", env("OLLAMA_FALLBACK_LLM_MODEL"), env("OLLAMA_FALLBACK_LLM_BASE_URL"), key_pool("OLLAMA_FALLBACK_LLM_API_KEYS"), max_tokens, temperature)
 
     # Backward-compatible migration path for existing local-first deployments.

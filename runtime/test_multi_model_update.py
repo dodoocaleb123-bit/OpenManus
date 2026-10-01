@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.platform.capability_registry import capabilities, get_capability, load_registry
+from app.platform.control_unit import ControlUnit
+from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, order_steps, validate_result
+from app.server import create_app
+
+
+def test_registry_contains_exactly_400_capabilities_and_expected_handlers():
+    payload = load_registry()
+    assert payload["count"] == 400
+    records = capabilities()
+    assert [item["id"] for item in records] == list(range(1, 401))
+    assert len({item["id"] for item in records}) == 400
+    assert get_capability(1)["handler"] == "qwen_coder"
+    assert get_capability(131)["handler"] == "gemma3"
+    assert get_capability(135)["handler"] == "llama3.2_3b"
+    assert get_capability(147)["handler"] == "qwen2.5_3b"
+    assert get_capability(166)["handler"] == "deepseek"
+    assert get_capability(225)["handler"] == "user"
+    assert get_capability(257)["handler"] == "platform"
+
+
+def test_control_unit_selects_ordered_handlers_and_current_attachments():
+    plan = ControlUnit().plan(
+        "Analyze this screenshot, research dashboard patterns, design and build the improved app",
+        attachment_ids=["upload-current"],
+        mode="implement",
+    )
+    assert plan["controller"] == "deepseek"
+    assert plan["attachment_ids"] == ["upload-current"]
+    assert {step["handler"] for step in plan["steps"]} >= {"gemma3", "qwen2.5_3b", "llama3.2_3b", "qwen_coder"}
+    assert plan["evidence_required"] is True
+
+
+def test_order_steps_rejects_cycles_and_preserves_dependencies():
+    ordered = order_steps([
+        {"step_id": "b", "depends_on": ["a"]},
+        {"step_id": "a", "depends_on": []},
+    ])
+    assert [step["step_id"] for step in ordered] == ["a", "b"]
+    with pytest.raises(ValueError):
+        order_steps([{ "step_id": "a", "depends_on": ["b"] }, {"step_id": "b", "depends_on": ["a"]}])
+
+
+def test_completed_handoff_requires_evidence():
+    request = HandoffRequest(task_id="t", step_id="s", capability_id=167, handler="deepseek", user_request="answer")
+    with pytest.raises(ValueError):
+        validate_result(HandoffResult(HandoffStatus.COMPLETED, request))
+    result = HandoffResult(HandoffStatus.COMPLETED, request, structured_result={"answer": "ok"})
+    validate_result(result)
+
+
+def test_registry_and_model_status_endpoints(tmp_path: Path):
+    app = create_app(tmp_path, check_llm=False)
+    with TestClient(app) as client:
+        registry = client.get("/api/capabilities/registry")
+        assert registry.status_code == 200
+        assert registry.json()["count"] == 400
+        status = client.get("/api/capabilities/models/status")
+        assert status.status_code == 200
+        roles = {item["role"] for item in status.json()["models"]}
+        assert roles == {"qwen_coder", "gemma3", "deepseek", "qwen2.5_3b", "llama3.2_3b"}
+        assert "api_key" not in status.text.lower()

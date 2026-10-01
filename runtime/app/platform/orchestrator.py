@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -504,6 +505,7 @@ class AgentOrchestrator:
                 f"EXECUTION MODE: {task.execution_mode}. Carry out only actions explicitly requested for this task.\n\n"
                 f"RECENT PROJECT CONVERSATION:\n{conversation}\n\n"
                 f"CURRENT USER MESSAGE:\n{task.prompt}\n\n"
+                + (f"DEEPSEEK CONTROL-UNIT PLAN (registry version {(task.plan or {}).get('registry_version', 'unknown')}):\n{json.dumps((task.plan or {}).get('control_unit_plan', {}), ensure_ascii=False, default=str)[:30000]}\n\n" if (task.plan or {}).get('control_unit_plan') else "")
                 + (f"ADVISORY REASONING PLAN (inspect the workspace and correct it if needed):\n{reasoning_plan}\n\n" if reasoning_plan else "")
                 + (f"SPECIALIST HANDOFFS (advisory; Qwen remains responsible for implementation):\n{specialist_handoff}\n\n" if specialist_handoff else "")
                 + research_instructions
