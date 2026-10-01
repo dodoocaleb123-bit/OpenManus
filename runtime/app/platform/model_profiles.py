@@ -37,5 +37,10 @@ def status_from_env() -> list[dict[str, Any]]:
         "configured": bool(os.getenv(profile.env_model)),
         "capability": profile.capability,
         "supports": list(profile.supports),
+        "enabled": True,
+        "vision": "vision" in profile.supports,
+        "tools": "tools" in profile.supports,
+        "coding": "coding" in profile.supports,
+        "planning": "planning" in profile.supports or profile.role == "deepseek",
         "status": "configured" if os.getenv(profile.env_model) else "default",
     } for profile in PROFILES]

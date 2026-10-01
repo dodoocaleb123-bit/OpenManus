@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from app.platform.capability_registry import get_capability, registry_version
+from app.platform.capability_registry import get_capability, registry_version, validate_json_schema
 
 
 class HandoffStatus(StrEnum):
@@ -55,8 +55,11 @@ class HandoffResult:
 
 
 def validate_result(result: HandoffResult) -> None:
-    if result.status == HandoffStatus.COMPLETED and not (result.evidence_refs or result.verification or result.structured_result):
-        raise ValueError(f"Completed capability {result.request.capability_id} has no evidence")
+    if result.status == HandoffStatus.COMPLETED:
+        if not (result.evidence_refs or result.verification or result.structured_result):
+            raise ValueError(f"Completed capability {result.request.capability_id} has no evidence")
+        record = get_capability(result.request.capability_id)
+        validate_json_schema(result.as_dict(), record["output_schema"], path=f"capability[{result.request.capability_id}].output")
     if result.status == HandoffStatus.FAILED and not result.error:
         raise ValueError("Failed handoff must include an error")
 

@@ -14,6 +14,36 @@ REGISTRY_PATH = Path(__file__).with_name("capabilities.json")
 VALID_HANDLERS = {"qwen_coder", "gemma3", "deepseek", "qwen2.5_3b", "llama3.2_3b", "user", "platform"}
 
 
+def validate_json_schema(value: Any, schema: dict[str, Any], *, path: str = "result") -> None:
+    """Validate the bounded JSON-Schema subset used by capability contracts."""
+    if not isinstance(schema, dict):
+        raise ValueError(f"{path}: schema must be an object")
+    expected = schema.get("type")
+    checks = {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
+        "null": value is None,
+    }
+    if expected in checks and not checks[expected]:
+        raise ValueError(f"{path}: expected {expected}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path}: value is not in enum")
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            if key not in value:
+                raise ValueError(f"{path}.{key}: required field is missing")
+        for key, child in schema.get("properties", {}).items():
+            if key in value:
+                validate_json_schema(value[key], child, path=f"{path}.{key}")
+    elif isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value[:100]):
+            validate_json_schema(item, schema["items"], path=f"{path}[{index}]")
+
+
 @lru_cache(maxsize=1)
 def load_registry() -> dict[str, Any]:
     payload = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
@@ -30,6 +60,8 @@ def load_registry() -> dict[str, Any]:
             raise ValueError(f"Capability {record['id']} has an unknown handler")
         if not record["aliases"] or not isinstance(record["input_schema"], dict) or not isinstance(record["output_schema"], dict):
             raise ValueError(f"Capability {record['id']} has invalid aliases or schemas")
+        if not isinstance(record["dependencies"], list) or any(int(dep) == int(record["id"]) for dep in record["dependencies"]):
+            raise ValueError(f"Capability {record['id']} has invalid dependencies")
     return payload
 
 
@@ -74,6 +106,11 @@ def validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Capability {record['id']} must run on {record['handler']}, not {step.get('handler')}")
         if any(str(dep) not in step_ids for dep in step.get("depends_on", [])):
             raise ValueError(f"Capability {record['id']} contains an unknown dependency")
+        present_capabilities = {int(item["capability_id"]) for item in plan.get("steps", [])}
+        missing = set(int(dep) for dep in record.get("dependencies", [])) - present_capabilities
+        if missing:
+            raise ValueError(f"Capability {record['id']} is missing declared dependencies: {sorted(missing)}")
+        validate_json_schema(step.get("input", {}), record["input_schema"], path=f"{step['step_id']}.input")
     return plan
 
 

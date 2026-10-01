@@ -98,6 +98,59 @@ def _normalise_review(value: dict[str, Any], model: str, raw: str) -> dict[str, 
     }
 
 
+async def make_authoritative_plan(
+    llm: LLM,
+    *,
+    prompt: str,
+    attachment_ids: list[str] | None = None,
+    browser_session_id: str | None = None,
+    mode: str = "auto",
+) -> dict[str, Any]:
+    """Ask DeepSeek to select registry capabilities, then validate on-platform."""
+    from app.platform.capability_registry import capabilities
+    from app.platform.control_unit import ControlUnit
+
+    catalog = [
+        {"id": r["id"], "name": r["name"], "category": r["category"], "handler": r["handler"],
+         "dependencies": r.get("dependencies", []), "requires_user": r["requires_user"],
+         "requires_confirmation": r["requires_confirmation"]}
+        for r in capabilities()
+    ]
+    response = await llm.ask(
+        [{"role": "user", "content": (
+            "You are the authoritative OpenManus control unit. Select the exact capability IDs needed "
+            "for the request from the registry. Do not invent IDs, handlers, tools, dependencies, or "
+            "completion claims. The platform will execute only your validated selections. Return ONLY JSON "
+            "with keys: summary, intent, capability_ids (integer array), excluded_capabilities (integer array), "
+            "requires_confirmation (boolean), rationale (string array). Prefer the smallest complete plan.\n\n"
+            f"Registry:\n{json.dumps(catalog, ensure_ascii=False)}\n\nRequest: {prompt}"
+        )}],
+        stream=False,
+        temperature=0.0,
+        max_tokens=max(512, int(os.environ.get("REASONING_LLM_MAX_TOKENS", "1800"))),
+    )
+    value = _parse_json(response)
+    if value.get("parse_error"):
+        raise ValueError(value["parse_error"])
+    ids = value.get("capability_ids")
+    if not isinstance(ids, list) or not ids or any(not isinstance(item, int) or isinstance(item, bool) for item in ids):
+        raise ValueError("DeepSeek authoritative plan must contain integer capability_ids")
+    plan = ControlUnit().plan_from_capability_ids(
+        prompt, ids, attachment_ids=attachment_ids, browser_session_id=browser_session_id,
+        mode=mode, excluded_capabilities=value.get("excluded_capabilities") or [],
+        controller="deepseek", planner_status="authoritative",
+    )
+    plan["deepseek"] = {
+        "model": llm.model, "summary": str(value.get("summary") or "")[:2000],
+        "intent": str(value.get("intent") or "unknown")[:120],
+        "rationale": _string_list(value.get("rationale"), limit=20), "raw_response": response[:12000],
+    }
+    plan["requires_confirmation"] = bool(value.get("requires_confirmation", False)) or any(
+        step.get("requires_confirmation") for step in plan["steps"]
+    )
+    return plan
+
+
 async def make_plan(llm: LLM, *, prompt: str, conversation: str, project_name: str, workspace: str) -> dict[str, Any]:
     """Ask the reasoning model for an advisory plan; never execute its output."""
     response = await llm.ask(

@@ -11,6 +11,7 @@ from app.platform.execution_state import ExecutionStateMachine
 from app.platform.model_profiles import profiles
 from app.platform.orchestrator import _is_design_only_task
 from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, order_steps, validate_result
+from app.platform.reasoning import make_authoritative_plan
 from app.server import create_app
 
 
@@ -83,6 +84,21 @@ def test_completed_handoff_requires_evidence():
         validate_result(HandoffResult(HandoffStatus.COMPLETED, request))
     result = HandoffResult(HandoffStatus.COMPLETED, request, structured_result={"answer": "ok"})
     validate_result(result)
+
+
+@pytest.mark.asyncio
+async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+
+        async def ask(self, messages, **kwargs):
+            return '{"summary":"research and build","intent":"engineering","capability_ids":[147,135,1],"excluded_capabilities":[],"requires_confirmation":false,"rationale":["source evidence before implementation"]}'
+
+    plan = await make_authoritative_plan(FakeDeepSeek(), prompt="Research this URL, design and build the result")
+    assert plan["authoritative"] is True
+    assert plan["controller"] == "deepseek"
+    assert [step["handler"] for step in plan["steps"]][:2] == ["deepseek", "qwen2.5_3b"]
+    assert any(step["handler"] == "llama3.2_3b" for step in plan["steps"])
 
 
 def test_registry_and_model_status_endpoints(tmp_path: Path):

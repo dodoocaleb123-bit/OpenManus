@@ -23,7 +23,7 @@ from tenacity import RetryError
 
 from app.config import config
 from app.llm import LLM, ThinkTagFilter, strip_think_tags
-from app.platform.reasoning import reasoning_enabled
+from app.platform.reasoning import make_authoritative_plan, reasoning_enabled
 from app.platform.git import GitError, GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.context import build_workspace_context
@@ -599,6 +599,16 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             if active_count >= global_limit:
                 raise HTTPException(status_code=429, detail=f"The platform is at its configured task limit ({global_limit}). Cancel or wait for an active task to finish.")
         plan = plan or unified_capability_plan(prompt, has_browser_session=bool(browser_session_id))
+        if not plan.get("planner_authoritative") and os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"} and "reasoning" in config.llm and reasoning_enabled():
+            try:
+                authoritative = await make_authoritative_plan(LLM(config_name="reasoning"), prompt=prompt, attachment_ids=list(plan.get("attachment_ids", [])), browser_session_id=browser_session_id, mode=execution_mode)
+                plan["control_unit_plan"] = authoritative
+                plan["planner"] = "deepseek"
+                plan["planner_authoritative"] = True
+                plan["deepseek_preflight"] = {"enabled": True, "configured": True, "status": "completed", "model": authoritative.get("deepseek", {}).get("model"), "authoritative": True}
+            except Exception as exc:
+                plan["planner_authoritative"] = False
+                plan["deepseek_preflight"] = {"enabled": True, "configured": True, "status": "failed", "authoritative": False, "error": str(exc)[:300]}
         task = store.create_task(project_id, prompt.strip(), execution_mode=execution_mode, idempotency_key=idempotency_key)
         task.plan = plan
         user_message = await asyncio.to_thread(store.add_chat_message, project_id, "user", prompt.strip(), task_id=task.id)
@@ -950,6 +960,31 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             if "engineering" not in plan["capabilities"]:
                 plan["capabilities"].append("engineering")
         plan["execution_mode"] = mode
+        bridge_note = ""
+        bridge_enabled = os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"}
+        bridge_status = {"enabled": bridge_enabled, "configured": "reasoning" in config.llm and reasoning_enabled(), "status": "not_run"}
+        if bridge_status["configured"] and bridge_enabled:
+            try:
+                authoritative = await make_authoritative_plan(
+                    LLM(config_name="reasoning"), prompt=text, attachment_ids=list(body.attachment_ids),
+                    browser_session_id=body.browser_session_id, mode=mode,
+                )
+                plan["control_unit_plan"] = authoritative
+                plan["planner"] = "deepseek"
+                plan["planner_authoritative"] = True
+                plan["capabilities"] = list(dict.fromkeys(plan.get("capabilities", []) + [step["handler"] for step in authoritative["steps"]]))
+                plan["deepseek_preflight"] = {"enabled": True, "configured": True, "status": "completed", "model": authoritative.get("deepseek", {}).get("model"), "authoritative": True}
+                bridge_note = "\n\nDEEPSEEK AUTHORITATIVE PLAN:\n" + json.dumps(authoritative.get("deepseek", {}), ensure_ascii=False)[:6000]
+                audit("deepseek.authoritative_plan", project_id=project_id, status="completed", model=authoritative.get("deepseek", {}).get("model"))
+            except Exception as exc:
+                plan["planner"] = "platform"
+                plan["planner_authoritative"] = False
+                plan["deepseek_preflight"] = {"enabled": True, "configured": True, "status": "failed", "authoritative": False, "error": str(exc)[:300]}
+                audit("deepseek.authoritative_plan", project_id=project_id, status="failed")
+        else:
+            plan["planner"] = "platform"
+            plan["planner_authoritative"] = False
+            plan["deepseek_preflight"] = {**bridge_status, "status": "disabled_or_unconfigured", "authoritative": False}
         async with chat_lock(project_id):
             request_id = request.headers.get("idempotency-key")
             if request_id and not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
@@ -978,30 +1013,6 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 return {"kind": "task", "plan": plan, "user": user_message, "assistant": assistant_message, "task": task}
             user_message = existing_user or await asyncio.to_thread(store.add_chat_message, project_id, "user", text, request_id=request_id)
 
-            bridge_enabled = os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"}
-            bridge_status = {"enabled": bridge_enabled, "configured": "reasoning" in config.llm and reasoning_enabled(), "status": "not_run"}
-            bridge_note = ""
-            if bridge_status["configured"] and bridge_enabled:
-                try:
-                    bridge_llm = LLM(config_name="reasoning")
-                    bridge_response = await bridge_llm.ask(
-                        [{"role": "user", "content": (
-                            "You are the OpenManus control unit. Classify this request and state the minimum required path "
-                            "(answer, image analysis, research, design, implementation, user action, or platform operation). "
-                            "Do not answer the user and do not claim execution. Return a concise JSON-or-text routing note.\n\n"
-                            f"REQUEST: {text}\nATTACHMENT_IDS: {list(body.attachment_ids)}"
-                        )}],
-                        stream=False,
-                        temperature=0.0,
-                        max_tokens=700,
-                    )
-                    bridge_note = "\n\nDEEPSEEK CONTROL-UNIT PREFLIGHT (routing guidance only; platform evidence remains authoritative):\n" + strip_think_tags(str(bridge_response))[:6000]
-                    bridge_status.update(status="completed", model=bridge_llm.model)
-                except Exception as exc:
-                    bridge_note = f"\n\nDEEPSEEK PREFLIGHT UNAVAILABLE: {str(exc)[:300]}. Continue using the deterministic platform route."
-                    bridge_status.update(status="failed", error=str(exc)[:300])
-            plan["deepseek_preflight"] = {key: value for key, value in bridge_status.items() if key != "error" or bridge_status.get("status") == "failed"}
-            audit("deepseek.preflight", project_id=project_id, status=bridge_status.get("status"), model=bridge_status.get("model"))
 
             async def save_assistant_reply(content: str, time_to_first_token_ms: int | None = None):
                 return await asyncio.to_thread(

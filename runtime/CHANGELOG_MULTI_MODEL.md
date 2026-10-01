@@ -1,5 +1,14 @@
 # Multi-model capability update
 
+## Final completion pass / 2026-10-01
+
+- DeepSeek now selects executable capability IDs for configured chat and direct task launches; the platform validates handlers, dependencies, schemas, user-action requirements, and confirmation flags before execution.
+- The registry is version `1.2.0`; declarative prerequisites are expanded into the execution graph instead of being inferred only from handler order.
+- Completed handoffs are checked against each capability output schema, not merely checked for non-empty evidence.
+- Explicit research URLs are retrieved through the bounded source fetcher before Qwen research synthesis, and citations are persisted in task evidence.
+- The five-model status payload now includes the capability flags consumed by the GUI.
+- Added an async regression test proving that a DeepSeek-selected plan becomes a validated executable registry plan.
+
 ## Comparison pass / 2026-10-01
 
 - Added explicit input/output schemas and supporting-handler metadata to all 400 capability records.
@@ -27,8 +36,8 @@ The supplied capability document contains one extra conversational greeting afte
 
 ## Verification
 
-- Non-Docker platform suite: 176 passed in the latest comparison pass.
-- Focused multi-model/routing suite: 39 passed in the latest comparison pass.
+- Non-Docker platform suite: 177 passed in the final completion pass.
+- Focused multi-model/routing suite: 39 passed in the final completion pass.
 - Python compilation: passed.
 - Registry completeness: passed.
 - Route smoke checks: passed.

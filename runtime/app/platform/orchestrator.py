@@ -20,6 +20,7 @@ from app.platform.classification import classify_request
 from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 from app.platform.store import PlatformStore
 from app.platform.sources import citation_records
+from app.platform.parallel_research import parallel_research
 from app.platform.visual import visual_prompt, visual_verification_enabled
 from app.platform.specialists import SpecialistGateway, is_design_request, is_research_request, select_specialists
 from app.platform.execution_state import ExecutionStateMachine
@@ -450,6 +451,13 @@ class AgentOrchestrator:
                 task.evidence["execution_state"] = execution_state.as_dict()
                 await self.store.save_task(task)
                 await emit("execution.state", "DeepSeek control-unit state machine initialized", {"state": execution_state.as_dict(), "controller": "deepseek"})
+                for controller_step in list(execution_state.steps.values()):
+                    if controller_step.handler == "deepseek" and controller_step.status == "pending" and not controller_step.depends_on:
+                        execution_state.start(controller_step.step_id, handoff_id=f"deepseek-plan-{task.id[:12]}")
+                        execution_state.finish(evidence={"controller": "deepseek", "planner_authoritative": bool(control_plan.get("authoritative")), "registry_version": control_plan.get("registry_version")})
+                task.evidence["execution_state"] = execution_state.as_dict()
+                await self.store.save_task(task)
+                await emit("handoff.completed", "DeepSeek authoritative plan validated", {"handler": "deepseek", "controller": "deepseek", "state": execution_state.as_dict()})
             async def begin_handler(handler: str):
                 if not execution_state:
                     return None
@@ -525,6 +533,10 @@ class AgentOrchestrator:
                 research_step = None
                 try:
                     research_step = await begin_handler("qwen2.5_3b")
+                    requested_url = _research_url(task.prompt)
+                    retrieved_sources = await parallel_research([requested_url] if requested_url else [], limit=1) if requested_url else []
+                    task.evidence["research_sources"] = citation_records(retrieved_sources)
+                    await self.store.save_task(task)
                     specialist_handoff["research"] = await gateway.ask_json(
                         "researcher",
                         instruction=(
@@ -532,10 +544,10 @@ class AgentOrchestrator:
                             "open_questions, and confidence. Use only evidence supplied in context or clearly label a claim as unverified. "
                             "Never claim to have browsed a page when no page evidence is supplied."
                         ),
-                        context={"user_request": task.prompt, "url": _research_url(task.prompt), "research_only": research_only},
+                        context={"user_request": task.prompt, "url": requested_url, "retrieved_sources": retrieved_sources, "research_only": research_only},
                         max_tokens=2200,
                     )
-                    await complete_handler(research_step, specialist_handoff["research"], sources=list(specialist_handoff["research"].get("sources") or []))
+                    await complete_handler(research_step, specialist_handoff["research"], sources=list(specialist_handoff["research"].get("sources") or []) + task.evidence.get("research_sources", []))
                 except Exception as exc:
                     if execution_state and research_step:
                         execution_state.fail(research_step.step_id, str(exc), retryable=True)
