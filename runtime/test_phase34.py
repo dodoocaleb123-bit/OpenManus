@@ -8,6 +8,7 @@ from app.platform.models import TaskStatus
 from app.platform.store import PlatformStore
 from app.platform.verification import FailureClassifier, VerificationEngine, stable_operation_id
 from app.server import create_app
+from test_support import install_fake_controller
 
 
 def test_verification_engine_requires_workspace_and_validation(tmp_path):
@@ -54,8 +55,10 @@ def test_store_persists_task_evidence_and_checkpoints(tmp_path):
     asyncio.run(scenario())
 
 
-def test_task_evidence_endpoint_exposes_persisted_contract(tmp_path):
+def test_task_evidence_endpoint_exposes_persisted_contract(tmp_path, monkeypatch):
+    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
     client = TestClient(create_app(tmp_path, check_llm=False))
+    client.app.state.orchestrator.start = lambda task: None
     project = client.post("/api/projects", json={"name": "evidence-api"}).json()
     task = client.post("/api/tasks", json={"project_id": project["id"], "prompt": "create a file named note.txt containing hello"}).json()
     response = client.get(f"/api/tasks/{task['id']}/evidence")

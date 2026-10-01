@@ -22,8 +22,9 @@ from app.platform.agent import WorkspaceBash, WorkspaceEditor, WorkspacePython
 from app.platform.git import GitWorkspace
 from app.platform.git_service import ProjectGit
 from app.platform.store import PlatformStore
-from app.platform.orchestrator import _is_browser_research_task, _research_url
+from app.platform.orchestrator import _research_url
 from app.server import create_app
+from test_support import install_fake_controller
 
 
 # ------------------------------------------------------------------ helpers
@@ -51,12 +52,14 @@ def has(type_):
     return lambda events: any(e["type"] == type_ for e in events)
 
 
-def test_browser_research_intent_does_not_enter_coding_mode():
-    assert _is_browser_research_task(
-        "Go through this website and tell me what is in there https://example.com/search?q=university"
-    )
-    assert _is_browser_research_task("Can you browse https://example.com and summarize the page?")
-    assert not _is_browser_research_task("Browse the website and update the project README with its findings")
+@pytest.fixture(autouse=True)
+def fake_deepseek_controller(monkeypatch, request):
+    if request.node.name == "test_unconfigured_llm_fails_fast_with_setup_hint":
+        return
+    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
+
+
+def test_url_extraction_is_not_used_as_an_intent_classifier():
     assert _research_url("Please inspect https://example.com/page?q=1.") == "https://example.com/page?q=1"
 
 
@@ -277,12 +280,13 @@ def make_client(tmp_path, script):
     return TestClient(app), agents
 
 
-def test_agent_question_is_answered_from_the_ui(tmp_path):
+def test_agent_question_is_answered_from_the_ui(tmp_path, monkeypatch):
     async def script(agent, prompt):
         await agent.channels["emit"]("agent.thought", "planning", {})
         answer = await agent.channels["ask"]("Which colour scheme?")
         Path(agent.channels["project"].workspace, "choice.txt").write_text(answer)
 
+    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
     client, agents = make_client(tmp_path, script)
     with client:
         p = client.post("/api/projects", json={"name": "q"}).json()
@@ -297,7 +301,101 @@ def test_agent_question_is_answered_from_the_ui(tmp_path):
     assert task["status"] == "succeeded" and task["result"] == "done after 1 run(s)"
     assert {"agent.thought", "human.reply", "coding.validation"} <= {e["type"] for e in events}
     assert agents[0].closed
-    assert set(agents[0].channels["tools"]) == {"platform_browser", "platform_git"}
+    assert set(agents[0].channels["tools"]) == {"platform_git"}
+
+
+def test_active_task_conversation_and_handoff_reply_are_both_deepseek_routed(tmp_path, monkeypatch):
+    calls = install_fake_controller(
+        monkeypatch,
+        selector=lambda prompt, context: (
+            ("execute", [1]) if "active_workflow" not in context or prompt == "dark" else ("respond", [167])
+        ),
+    )
+
+    class DirectDeepSeekReply:
+        model = "deepseek-r1:7b"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            return "DeepSeek says the agent is waiting for your colour preference."
+
+    monkeypatch.setattr("app.api.routes.LLM", DirectDeepSeekReply)
+
+    async def script(agent, prompt):
+        reply = await agent.channels["ask"]("Which colour scheme?")
+        Path(agent.channels["project"].workspace, "choice.txt").write_text(reply)
+
+    client, _ = make_client(tmp_path, script)
+    with client:
+        project = client.post("/api/projects", json={"name": "active-routing"}).json()
+        task = client.post("/api/tasks", json={"project_id": project["id"], "prompt": "build it"}).json()
+        wait_for(client, task["id"], has("agent.question"))
+
+        conversational = client.post(
+            f"/api/tasks/{task['id']}/messages", json={"message": "  What are you waiting for?  "}
+        )
+        assert conversational.status_code == 200
+        assert conversational.json()["kind"] == "chat"
+        assert conversational.json()["assistant"]["content"].startswith("DeepSeek says")
+        assert client.get(f"/api/tasks/{task['id']}").json()["pending_question"] == "Which colour scheme?"
+
+        handoff_reply = client.post(f"/api/tasks/{task['id']}/messages", json={"message": "dark"})
+        assert handoff_reply.status_code == 200
+        assert handoff_reply.json()["kind"] == "task_continuation"
+        assert handoff_reply.json()["delivery"] == "answered"
+        wait_for(client, task["id"], has("task.succeeded"))
+
+    assert [entry["prompt"] for entry in calls] == ["build it", "  What are you waiting for?  ", "dark"]
+    assert (Path(project["workspace"]) / "choice.txt").read_text() == "dark"
+    messages = client.get(f"/api/projects/{project['id']}/chat").json()
+    assert any(item["content"] == "DeepSeek says the agent is waiting for your colour preference." for item in messages)
+
+
+def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path, monkeypatch):
+    def selector(prompt, context):
+        if context.get("active_workflow") and prompt == "request a new unselected step":
+            return "execute", [5]
+        return "execute", [1, 231, 3]
+
+    install_fake_controller(monkeypatch, capability_ids=[1, 231, 3], route="execute", selector=selector)
+    run_prompts = []
+
+    async def script(agent, prompt):
+        run_prompts.append(prompt)
+        if agent.runs == 1:
+            Path(agent.channels["project"].workspace, "first-stage.txt").write_text("built")
+        else:
+            Path(agent.channels["project"].workspace, "second-stage.txt").write_text("resumed")
+
+    client, agents = make_client(tmp_path, script)
+    with client:
+        project = client.post("/api/projects", json={"name": "post-build-user-step"}).json()
+        task = client.post("/api/tasks", json={"project_id": project["id"], "prompt": "Build, then ask me to verify, then inspect the result"}).json()
+        wait_for(client, task["id"], has("user_action.required"))
+        unselected = client.post(
+            f"/api/tasks/{task['id']}/messages",
+            json={"message": "request a new unselected step"},
+        )
+        assert unselected.status_code == 409
+        assert "new capability step" in unselected.json()["detail"]
+        response = client.post(
+            f"/api/tasks/{task['id']}/messages",
+            json={"message": "I verified the first stage; continue."},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["kind"] == "task_continuation"
+        events = wait_for(client, task["id"], has("task.succeeded"))
+        final_task = client.get(f"/api/tasks/{task['id']}").json()
+
+    workspace = Path(project["workspace"])
+    assert (workspace / "first-stage.txt").read_text() == "built"
+    assert (workspace / "second-stage.txt").read_text() == "resumed"
+    assert len(run_prompts) == 2 and "CURRENT SELECTED STEP" in run_prompts[1]
+    assert final_task["status"] == "succeeded"
+    assert any(event["type"] == "user_action.verified" for event in events)
+    assert agents[0].closed
 
 
 def test_messages_during_a_task_are_queued_for_the_agent(tmp_path):
@@ -370,9 +468,9 @@ def test_unconfigured_llm_fails_fast_with_setup_hint(tmp_path):
         status = client.get("/api/status").json()
         assert status["llm"]["configured"] is False
         p = client.post("/api/projects", json={"name": "n"}).json()
-        t = client.post("/api/tasks", json={"project_id": p["id"], "prompt": "x"}).json()
-        events = wait_for(client, t["id"], has("task.failed"), timeout=10)
-    assert "LLM_API_KEY" in events[-1]["message"]
+        response = client.post("/api/tasks", json={"project_id": p["id"], "prompt": "x"})
+    assert response.status_code == 503
+    assert "DeepSeek" in response.json()["detail"]
 
 
 def test_sse_stream_resumes_after_last_event_id(tmp_path):

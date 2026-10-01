@@ -6,11 +6,13 @@ from fastapi.testclient import TestClient
 
 from app.platform.models import TaskStatus
 from app.server import create_app
+from test_support import install_fake_controller
 
 
 class FakeChatLLM:
     last_system = None
     last_messages = None
+    model = "deepseek-r1:7b"
 
     def __init__(self, *args, **kwargs):
         pass
@@ -23,66 +25,34 @@ class FakeChatLLM:
 
 
 def make_client(tmp_path, monkeypatch):
+    install_fake_controller(monkeypatch)
     monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
-    monkeypatch.setattr("app.api.routes.llm_problem", lambda: None)
     return TestClient(create_app(tmp_path, check_llm=False))
 
 
-def test_answer_and_plan_modes_do_not_launch_tasks_or_load_repository(tmp_path, monkeypatch):
-    client = make_client(tmp_path, monkeypatch)
+def test_deepseek_decision_not_legacy_mode_field_controls_route(tmp_path, monkeypatch):
+    def choose(prompt, context):
+        return ("execute", [1]) if prompt == "Create a calculator app" else ("respond", [168])
+
+    calls = install_fake_controller(monkeypatch, selector=choose)
+    monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
+    client = TestClient(create_app(tmp_path, check_llm=False))
     project = client.post("/api/projects", json={"name": "modes"}).json()
     workspace = tmp_path / "projects" / project["id"]
     (workspace / "secret-source.py").write_text("important source", encoding="utf-8")
 
-    answer = client.post(
-        f"/api/projects/{project['id']}/chat",
-        json={"message": "Explain this source.py file", "mode": "answer"},
-    )
+    answer = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Explain this source.py file", "mode": "implement"})
     assert answer.status_code == 200
     assert answer.json()["kind"] == "chat"
-    assert "Answer only" in FakeChatLLM.last_system[0]["content"]
-    assert "important source" not in FakeChatLLM.last_system[0]["content"]
+    assert calls[0]["prompt"] == "Explain this source.py file"
 
-    plan = client.post(
-        f"/api/projects/{project['id']}/chat",
-        json={"message": "Create a calculator app", "mode": "plan"},
-    )
-    assert plan.status_code == 200
-    assert plan.json()["kind"] == "chat"
-    assert plan.json()["plan"]["intent"] == "plan_only"
-    assert "Plan only" in FakeChatLLM.last_system[0]["content"]
-    assert client.get(f"/api/projects/{project['id']}/tasks").json() == []
-
-
-def test_math_request_requires_current_problem_and_does_not_reuse_prior_solution(tmp_path, monkeypatch):
-    client = make_client(tmp_path, monkeypatch)
-    project = client.post("/api/projects", json={"name": "math-grounding"}).json()
-
-    first = client.post(
-        f"/api/projects/{project['id']}/chat",
-        json={"message": "Solve 2+2", "mode": "answer"},
-    )
-    assert first.status_code == 200
-    assert len(FakeChatLLM.last_messages) == 1
-
-    previous_call = FakeChatLLM.last_messages
-    missing = client.post(
-        f"/api/projects/{project['id']}/chat",
-        json={"message": "I want you to answer a mathematics question", "mode": "answer"},
-    )
-    assert missing.status_code == 200
-    assert "complete mathematics question" in missing.json()["assistant"]["content"]
-    assert FakeChatLLM.last_messages is previous_call
-
-    second = client.post(
-        f"/api/projects/{project['id']}/chat",
-        json={"message": "Solve 5+5", "mode": "answer"},
-    )
-    assert second.status_code == 200
-    assert len(FakeChatLLM.last_messages) == 1
-    assert FakeChatLLM.last_messages[0]["content"] == "Solve 5+5"
-    assert "Never invent a problem" in FakeChatLLM.last_system[0]["content"]
-    assert "Files explicitly attached to this message: none" in FakeChatLLM.last_system[0]["content"]
+    client.app.state.orchestrator.start = lambda task: None
+    build = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Create a calculator app", "mode": "answer"})
+    assert build.status_code == 200
+    assert calls[1]["prompt"] == "Create a calculator app"
+    assert build.json()["kind"] == "task"
+    assert build.json()["plan"]["route"] == "execute"
+    assert client.get(f"/api/projects/{project['id']}/tasks").json()
 
 
 def test_project_memory_is_persisted_scoped_and_rejects_credentials(tmp_path, monkeypatch):
@@ -97,7 +67,7 @@ def test_project_memory_is_persisted_scoped_and_rejects_credentials(tmp_path, mo
 
     chat = client.post(
         f"/api/projects/{project['id']}/chat",
-        json={"message": "Explain the project architecture", "mode": "inspect"},
+        json={"message": "Explain the project architecture"},
     )
     assert chat.status_code == 200
     assert "Prefer Python 3.11" in FakeChatLLM.last_system[0]["content"]
@@ -111,7 +81,9 @@ def test_project_memory_is_persisted_scoped_and_rejects_credentials(tmp_path, mo
 
 
 def test_task_launch_idempotency_returns_existing_task_without_duplicate_chat(tmp_path, monkeypatch):
-    client = make_client(tmp_path, monkeypatch)
+    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
+    monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
+    client = TestClient(create_app(tmp_path, check_llm=False))
     project = client.post("/api/projects", json={"name": "idempotency"}).json()
     started = []
     client.app.state.orchestrator.start = lambda task: started.append(task.id)

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
-from app.llm import LLM
+from app.llm import LLM, strip_think_tags
 from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, validate_result
 
 T = TypeVar("T")
@@ -39,48 +39,6 @@ ROLES = {
 }
 
 
-def is_design_request(prompt: str) -> bool:
-    return bool(re.search(
-        r"\b(design|beautiful|beauty|visual identity|ui|ux|interface|landing page|dashboard|mobile app|webpage|screen|layout|typography|color palette|wireframe|prototype)\b",
-        prompt or "", re.IGNORECASE,
-    ))
-
-
-def is_research_request(prompt: str) -> bool:
-    return bool(re.search(
-        r"\b(research|deep research|investigate|sources?|cite|compare|literature|find out|search the internet|search online|web research)\b",
-        prompt or "", re.IGNORECASE,
-    ))
-
-
-def specialist_configured(role: str, config: Any) -> bool:
-    config_name = ROLES.get(role, ROLES["coder"]).model_config_name
-    return config_name in getattr(config, "llm", {})
-
-
-def select_specialists(*, intent: str, complexity: str = "normal", has_images: bool = False, browser: bool = False, requires_artifacts: bool = False, design: bool = False, research: bool = False) -> list[dict[str, Any]]:
-    names: list[str] = []
-    if complexity == "heavy":
-        names.append("planner")
-    if research or intent == "research" or browser:
-        names.append("researcher")
-    if design:
-        names.append("designer")
-    if intent in {"coding", "engineering"} or design:
-        names.append("coder")
-    if has_images:
-        names.append("vision")
-    if requires_artifacts:
-        names.append("artifact")
-    if complexity in {"heavy", "normal"} or intent in {"coding", "research", "engineering"}:
-        names.append("verifier")
-    unique = dict.fromkeys(names)
-    return [
-        {"name": name, "purpose": ROLES[name].purpose, "capabilities": list(ROLES[name].capabilities), "model_config": ROLES[name].model_config_name}
-        for name in unique
-    ]
-
-
 def _parse_json(text: str) -> dict[str, Any]:
     candidate = (text or "").strip()
     if candidate.startswith("```"):
@@ -102,10 +60,10 @@ def _clip(value: Any, limit: int = 12000) -> str:
     return str(value or "")[:limit]
 
 
-def design_skill_context(limit_per_skill: int = 3500) -> dict[str, str]:
-    """Load normalized design guidance without embedding every skill in every call."""
+def design_skill_context(limit_per_skill: int = 6000) -> dict[str, str]:
+    """Load one normalized design reference only for assigned design handoffs."""
     root = Path(__file__).resolve().parents[1] / "skills" / "design"
-    names = ("frontend-design.md", "ui-ux-pro-max.md", "emil-design-eng.md", "impeccable.md", "taste.md", "sleek-design-mobile-apps.md")
+    names = ("openmanus-design-playbook.md",)
     result: dict[str, str] = {}
     for name in names:
         path = root / name
@@ -130,7 +88,11 @@ class SpecialistGateway:
 
     def llm(self, role: str) -> LLM:
         config_name = ROLES[role].model_config_name
-        if config_name not in self.config.llm and "default" not in self.config.llm:
+        if config_name not in self.config.llm:
+            if role != "coder" or "default" not in self.config.llm:
+                raise RuntimeError(f"Assigned specialist model is not configured: {config_name}")
+            config_name = "default"
+        if config_name not in self.config.llm:
             raise RuntimeError(f"Specialist model is not configured: {config_name}")
         return LLM(config_name=config_name)
 
@@ -161,8 +123,9 @@ class SpecialistGateway:
                 temperature=0.2,
                 max_tokens=max_tokens,
             ), timeout=self._timeout())
-        parsed = _parse_json(response)
-        result = {"role": role, "model": llm.model, "raw_response": _clip(response), **parsed}
+        safe_response = strip_think_tags(response)
+        parsed = _parse_json(safe_response)
+        result = {"role": role, "model": llm.model, "raw_response": _clip(safe_response), **parsed}
         await self._event("specialist.completed", f"{role} specialist completed", {"role": role, "model": llm.model, "result": result})
         return result
 

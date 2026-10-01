@@ -2,6 +2,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.server import create_app
+from test_support import install_fake_controller
 
 
 def test_health(tmp_path: Path):
@@ -9,8 +10,10 @@ def test_health(tmp_path: Path):
     assert client.get('/api/health').json()['status'] == 'ok'
 
 
-def test_project_and_task(tmp_path: Path):
+def test_project_and_task(tmp_path: Path, monkeypatch):
+    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
     client = TestClient(create_app(tmp_path))
+    client.app.state.orchestrator.start = lambda task: None
     p = client.post('/api/projects', json={'name': 'demo'}).json()
     assert p['git_ready'] is False
     task = client.post('/api/tasks', json={'project_id': p['id'], 'prompt': 'create a hello world app'}).json()

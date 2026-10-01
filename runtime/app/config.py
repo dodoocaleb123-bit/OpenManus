@@ -197,6 +197,73 @@ class AppConfig(BaseModel):
         arbitrary_types_allowed = True
 
 
+_LLM_ENV_ROLES = {
+    "default": "LOCAL_LLM",
+    "heavy_coding": "HEAVY_CODING_LLM",
+    "vision": "VISION_LLM",
+    "reasoning": "REASONING_LLM",
+    "research": "RESEARCH_LLM",
+    "creativity": "CREATIVITY_LLM",
+    "fallback": "OLLAMA_FALLBACK_LLM",
+}
+
+
+def apply_llm_environment_overrides(
+    configured: Dict[str, dict], environ: Optional[Dict[str, str]] = None
+) -> Dict[str, dict]:
+    """Apply role-specific environment settings without leaking defaults across roles.
+
+    Ollama-compatible model names default to the Docker host Ollama endpoint when
+    no endpoint is supplied. Specialist roles are created only when explicitly
+    configured in TOML or by their own model environment variable.
+    """
+    import os
+
+    env = os.environ if environ is None else environ
+    result = {name: dict(values) for name, values in configured.items()}
+    for role, prefix in _LLM_ENV_ROLES.items():
+        model = env.get(f"{prefix}_MODEL", "").strip()
+        base_url = env.get(f"{prefix}_BASE_URL", "").strip()
+        api_key = (env.get(f"{prefix}_API_KEY") or env.get(f"{prefix}_API_KEY_01") or "").strip()
+        api_type = env.get(f"{prefix}_API_TYPE", "").strip()
+        max_tokens = env.get(f"{prefix}_MAX_TOKENS", "").strip()
+        temperature = env.get(f"{prefix}_TEMPERATURE", "").strip()
+        if not any((model, base_url, api_key, api_type, max_tokens, temperature)):
+            continue
+        if role not in result and role != "default" and not model:
+            # A specialist without its own model must not masquerade as the
+            # global/default model merely because endpoint credentials exist.
+            continue
+
+        role_values = result.get(role)
+        if role_values is None:
+            role_values = dict(result.get("default", {}))
+        else:
+            role_values = dict(role_values)
+        if model:
+            role_values["model"] = model
+        effective_model = str(role_values.get("model") or "")
+        looks_local = ":" in effective_model and not effective_model.startswith(("http://", "https://"))
+        if base_url:
+            role_values["base_url"] = base_url
+        elif looks_local:
+            role_values["base_url"] = env.get("LOCAL_LLM_BASE_URL", "http://host.docker.internal:11434/v1")
+        if api_key:
+            role_values["api_key"] = api_key
+        elif looks_local:
+            role_values["api_key"] = env.get("LOCAL_LLM_API_KEY", "ollama")
+        if api_type:
+            role_values["api_type"] = api_type
+        elif looks_local:
+            role_values["api_type"] = "openai"
+        if max_tokens:
+            role_values["max_tokens"] = int(max_tokens)
+        if temperature:
+            role_values["temperature"] = float(temperature)
+        result[role] = role_values
+    return result
+
+
 class Config:
     _instance = None
     _lock = threading.Lock()
@@ -314,14 +381,15 @@ class Config:
             run_flow_settings = RunflowSettings(**run_flow_config)
         else:
             run_flow_settings = RunflowSettings()
-        config_dict = {
-            "llm": {
-                "default": default_settings,
-                **{
-                    name: {**default_settings, **override_config}
-                    for name, override_config in llm_overrides.items()
-                },
+        llm_settings = {
+            "default": default_settings,
+            **{
+                name: {**default_settings, **override_config}
+                for name, override_config in llm_overrides.items()
             },
+        }
+        config_dict = {
+            "llm": apply_llm_environment_overrides(llm_settings),
             "sandbox": sandbox_settings,
             "browser_config": browser_settings,
             "search_config": search_settings,

@@ -1,7 +1,8 @@
-"""Versioned capability registry and deterministic handler resolution.
+"""Versioned capability registry and deterministic handler validation.
 
-The registry is the source of truth for planning. Models receive selected
-records, never an unbounded prompt containing the entire inventory.
+DeepSeek receives a compact capability directory and chooses IDs. The platform
+expands those selections into full schemas, validates owners/dependencies, and
+keeps execution and permission checks deterministic.
 """
 from __future__ import annotations
 

@@ -78,7 +78,8 @@ def order_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ready = [step for step in pending.values() if all(str(dep) not in pending for dep in step.get("depends_on", []))]
         if not ready:
             raise ValueError("Capability plan contains a dependency cycle or unknown dependency")
-        ready.sort(key=lambda step: str(step["step_id"]))
+        # Dict insertion order follows the selected capability list, so retain
+        # DeepSeek's execution order for independent steps.
         for step in ready:
             output.append(step)
             pending.pop(str(step["step_id"]))

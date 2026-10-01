@@ -216,7 +216,6 @@ class PlatformStore:
             recovery=json.loads(row["recovery"]) if "recovery" in row.keys() and row["recovery"] else {},
             idempotency_key=row["idempotency_key"] if "idempotency_key" in row.keys() else None,
             last_heartbeat=PlatformStore._dt(row["last_heartbeat"]) if "last_heartbeat" in row.keys() else None,
-            execution_mode=row["execution_mode"] if "execution_mode" in row.keys() else "implement",
             first_token_ms=row["first_token_ms"] if "first_token_ms" in row.keys() else None,
         )
 
@@ -312,15 +311,13 @@ class PlatformStore:
             db.execute("DELETE FROM projects WHERE id=?", (project_id,))
         return row["workspace"]
 
-    def create_task(self, project_id: str, prompt: str, execution_mode: str = "implement", idempotency_key: str | None = None) -> Task:
+    def create_task(self, project_id: str, prompt: str, idempotency_key: str | None = None) -> Task:
         if not self.get_project(project_id):
             raise KeyError(f"Unknown project: {project_id}")
-        if execution_mode not in {"implement", "inspect"}:
-            raise ValueError("Task execution mode must be implement or inspect")
-        task = Task(project_id=project_id, prompt=prompt, execution_mode=execution_mode, idempotency_key=idempotency_key)
+        task = Task(project_id=project_id, prompt=prompt, idempotency_key=idempotency_key)
         with self._connect() as db:
-            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan,evidence,artifacts,recovery,idempotency_key,last_heartbeat,execution_mode,first_token_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.execution_mode, task.first_token_ms))
+            db.execute("INSERT INTO tasks(id,project_id,prompt,status,created_at,attempt,browser_session_id,coding_iteration,validation,plan,evidence,artifacts,recovery,idempotency_key,last_heartbeat,first_token_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (task.id, task.project_id, task.prompt, task.status.value, task.created_at.isoformat(), task.attempt, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.first_token_ms))
         return task
 
     @staticmethod
@@ -550,10 +547,10 @@ class PlatformStore:
     async def save_task(self, task: Task) -> None:
         async with self._lock:
             with self._connect() as db:
-                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=?, evidence=?, artifacts=?, recovery=?, idempotency_key=?, last_heartbeat=?, execution_mode=?, first_token_ms=? WHERE id=?""",
+                db.execute("""UPDATE tasks SET status=?, started_at=?, finished_at=?, result=?, error=?, attempt=?, checkpoint=?, browser_session_id=?, coding_iteration=?, validation=?, plan=?, evidence=?, artifacts=?, recovery=?, idempotency_key=?, last_heartbeat=?, first_token_ms=? WHERE id=?""",
                            (task.status.value, task.started_at.isoformat() if task.started_at else None,
                             task.finished_at.isoformat() if task.finished_at else None, task.result, task.error,
-                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.execution_mode, task.first_token_ms, task.id))
+                            task.attempt, task.checkpoint, task.browser_session_id, task.coding_iteration, json.dumps(task.validation) if task.validation else None, json.dumps(task.plan) if task.plan else None, json.dumps(task.evidence), json.dumps(task.artifacts), json.dumps(task.recovery), task.idempotency_key, task.last_heartbeat.isoformat() if task.last_heartbeat else None, task.first_token_ms, task.id))
 
     async def save_checkpoint(self, task_id: str, name: str, data: dict) -> None:
         from uuid import uuid4

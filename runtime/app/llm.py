@@ -373,7 +373,15 @@ class LLM:
             # use the configured local-to-cloud fallback. Previously this was
             # limited to ``default``, so image requests routed through
             # ``vision`` could not fail over.
-            self._fallback_config = config.llm.get("fallback") or config.llm.get("cloud")
+            # A named role is an assignment, not a preference. In particular,
+            # the DeepSeek control unit and local research/design specialists
+            # must not silently become the default model (or a paid cloud model)
+            # when their own endpoint fails. Only the general default role may
+            # use the explicitly configured fallback.
+            self._fallback_config = (
+                (config.llm.get("fallback") or config.llm.get("cloud"))
+                if config_name == "default" else None
+            )
             self._using_fallback = False
             self.model = llm_config.model
             self.max_tokens = llm_config.max_tokens

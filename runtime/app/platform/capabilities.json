@@ -9192,13 +9192,15 @@
         "evidence_refs"
       ],
       "dependencies": [
-        166
+        166,
+        1
       ],
       "verification": [
         "vision_model_result",
         "attachment_provenance"
       ],
       "tools": [
+        "browser",
         "vision"
       ],
       "failure_policy": "retry_once_then_repair",
@@ -9259,13 +9261,15 @@
         "evidence_refs"
       ],
       "dependencies": [
-        166
+        166,
+        1
       ],
       "verification": [
         "vision_model_result",
         "attachment_provenance"
       ],
       "tools": [
+        "browser",
         "vision"
       ],
       "failure_policy": "retry_once_then_repair",

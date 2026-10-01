@@ -9,7 +9,6 @@ from app.platform.capability_registry import capabilities, get_capability, load_
 from app.platform.control_unit import ControlUnit
 from app.platform.execution_state import ExecutionStateMachine
 from app.platform.model_profiles import profiles
-from app.platform.orchestrator import _is_design_only_task
 from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, order_steps, validate_result
 from app.platform.reasoning import make_authoritative_plan
 from app.server import create_app
@@ -34,10 +33,10 @@ def test_registry_contains_exactly_400_capabilities_and_expected_handlers():
 
 
 def test_control_unit_selects_ordered_handlers_and_current_attachments():
-    plan = ControlUnit().plan(
+    plan = ControlUnit().plan_from_capability_ids(
         "Analyze this screenshot, research dashboard patterns, design and build the improved app",
+        [131, 147, 135, 1],
         attachment_ids=["upload-current"],
-        mode="implement",
     )
     assert plan["controller"] == "deepseek"
     assert plan["attachment_ids"] == ["upload-current"]
@@ -73,11 +72,6 @@ def test_state_machine_enforces_dependencies_and_user_pause():
     assert state.steps["user"].evidence["required_action"] == "Take over the browser"
 
 
-def test_design_only_requests_do_not_count_as_implementation():
-    assert _is_design_only_task("Design a beautiful mobile dashboard with a modern palette")
-    assert not _is_design_only_task("Design and build a beautiful mobile dashboard")
-
-
 def test_completed_handoff_requires_evidence():
     request = HandoffRequest(task_id="t", step_id="s", capability_id=167, handler="deepseek", user_request="answer")
     with pytest.raises(ValueError):
@@ -90,15 +84,37 @@ def test_completed_handoff_requires_evidence():
 async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
     class FakeDeepSeek:
         model = "deepseek-r1:7b"
+        last_messages = None
+        last_system = None
 
-        async def ask(self, messages, **kwargs):
-            return '{"summary":"research and build","intent":"engineering","capability_ids":[147,135,1],"excluded_capabilities":[],"requires_confirmation":false,"rationale":["source evidence before implementation"]}'
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            FakeDeepSeek.last_messages = messages
+            FakeDeepSeek.last_system = system_msgs
+            return '{"route":"execute","needs_workspace_context":true,"summary":"research and build","intent":"engineering","capability_ids":[147,135,1],"excluded_capabilities":[],"requires_confirmation":false,"rationale":["source evidence before implementation"]}'
 
-    plan = await make_authoritative_plan(FakeDeepSeek(), prompt="Research this URL, design and build the result")
+    raw_prompt = "  Research this URL, design and build the result  "
+    plan = await make_authoritative_plan(FakeDeepSeek(), prompt=raw_prompt)
     assert plan["authoritative"] is True
     assert plan["controller"] == "deepseek"
     assert [step["handler"] for step in plan["steps"]][:2] == ["deepseek", "qwen2.5_3b"]
     assert any(step["handler"] == "llama3.2_3b" for step in plan["steps"])
+    assert FakeDeepSeek.last_messages == [{"role": "user", "content": raw_prompt}]
+    offered = FakeDeepSeek.last_system[0]["content"]
+    assert "257\tplatform" not in offered
+    assert "Delete projects" not in offered
+    assert "executable work only" in offered
+
+
+@pytest.mark.asyncio
+async def test_deepseek_cannot_select_an_unimplemented_platform_capability_as_work():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+
+        async def ask(self, messages, **kwargs):
+            return '{"route":"execute","needs_workspace_context":false,"summary":"delete project","intent":"project operation","capability_ids":[179],"excluded_capabilities":[],"requires_confirmation":true,"rationale":[]}'
+
+    with pytest.raises(ValueError, match="handler.*without an executable workflow adapter"):
+        await make_authoritative_plan(FakeDeepSeek(), prompt="Delete the project")
 
 
 def test_registry_and_model_status_endpoints(tmp_path: Path):
@@ -114,5 +130,5 @@ def test_registry_and_model_status_endpoints(tmp_path: Path):
         assert "api_key" not in status.text.lower()
         platform_status = client.get("/api/status")
         assert platform_status.status_code == 200
-        assert "deepseek_bridge" in platform_status.json()
+        assert platform_status.json()["deepseek_control"]["required"] is True
         assert '"api_key":' not in platform_status.text.lower()

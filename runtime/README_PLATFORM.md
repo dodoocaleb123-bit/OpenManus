@@ -14,28 +14,22 @@ including display equations, fractions, aligned systems, superscripts, and
 common AMS constructs. MathJax is loaded by the web client; if the CDN is
 unavailable, the original formula text remains visible as a fallback.
 
-Each project has one persistent conversation composer with explicit request modes:
-
-- **Auto** chooses a response, read-only inspection, or implementation based on
-  the request. Project context is loaded only when the question is project-related.
-- **Answer only** does not load repository excerpts or start project tools.
-- **Inspect project** reads bounded, relevant local files and answers without
-  starting the build agent or intentionally changing project state.
-- **Plan only** returns a plan and risks without running tools or changing files.
-- **Implement & verify** starts the autonomous coding workflow for the requested
-  change and independent validation.
-
-The selector is saved in the browser. Bounded lexical retrieval prefers relevant
-source files and common project documentation; secret-like filenames, generated
-directories, and oversized content are excluded. A per-project Memory pane lets
-you save up to 6,000 characters of stable preferences and constraints in local
-SQLite. Credentials are rejected, and memory/file excerpts are treated as
-untrusted context rather than instructions.
+Each project has one persistent conversation composer and no task/conversation
+mode selector. Every new message is sent to DeepSeek first, unchanged; DeepSeek
+chooses a direct response or an ordered, registry-validated capability workflow.
+Only when DeepSeek asks for workspace context does the server add bounded local
+file excerpts. Secret-like filenames, generated directories, and oversized
+content are excluded. A per-project Memory pane stores up to 6,000 characters
+in local SQLite; credentials are rejected and both memory and files are treated
+as untrusted reference data, not instructions.
 
 The paperclip button is in the lower-left of the composer. Selected uploads
-appear as attachment chips and are sent with the next Discuss message. For
-Inspect and Make changes, uploads remain in the project workspace and the task
-is told to inspect them when relevant.
+appear as attachment chips and are included in the same DeepSeek-first message.
+DeepSeek may assign image analysis to Gemma; project code, terminal, and preview
+work goes to the configured Qwen Coder role. During active tasks, follow-up
+messages also go through DeepSeek, which decides whether to answer conversationally
+or continue the active workflow. Declared user-action capabilities pause the task
+and resume only after the user replies.
 
 ## How a build task runs (v0.7)
 
@@ -99,7 +93,7 @@ prompt ─▶ PlatformManus (plan → act → observe, up to AGENT_MAX_STEPS)
 | Repository intelligence | `GET /api/projects/{id}/repository-map` (bounded file/language/Python-symbol map) |
 | Project memory | `GET/PUT /api/projects/{id}/memory` (local-only; 6,000-character limit; credential-like values rejected) |
 | Uploads | `POST/GET /api/projects/{id}/uploads`, `GET /api/projects/{id}/uploads/{file_id}` |
-| Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent conversation; `mode` may be `auto`, `answer`, `inspect`, `plan`, or `implement`) |
+| Chat | `GET /api/projects/{id}/chat`, `POST /api/projects/{id}/chat` (persistent conversation; no client-selected route mode) |
 | Tasks | `POST /api/tasks` (`{project_id, prompt}`; optional `Idempotency-Key` header), `GET /api/projects/{id}/tasks`, `GET /api/tasks/{id}`, `POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/messages`, `POST /api/tasks/{id}/feedback` (`{rating: 1|-1}`) |
 | Events | `GET /api/tasks/{id}/events` (SSE, resumable), `GET /api/tasks/{id}/events/history` |
 | Git | `GET /api/projects/{id}/git/status\|diff\|log`, `POST …/git/branch\|commit\|push` |
@@ -131,21 +125,51 @@ Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fa
 `PLATFORM_MAX_CONCURRENT_TASKS`, `PLATFORM_MAX_UPLOAD_MB`, `PLATFORM_IMAGE_MAX_TOKENS` (default `6144`),
 `PLATFORM_CHAT_MAX_TOKENS` (default `2400`), `REASONING_LLM_MODEL`,
 `REASONING_LLM_BASE_URL`, `REASONING_LLM_API_KEY_01` … `_10`,
-`REASONING_LLM_ENABLED=true`, `REASONING_LLM_MODE=complex|always|off`,
+`REASONING_LLM_ENABLED=true`,
 `REASONING_LLM_MAX_TOKENS` (default `1200`), `RESEARCH_LLM_MODEL`,
 `RESEARCH_LLM_BASE_URL`, `RESEARCH_LLM_API_KEY` or `RESEARCH_LLM_API_KEY_01` … `_10`,
 `CREATIVITY_LLM_MODEL`, `CREATIVITY_LLM_BASE_URL`, `CREATIVITY_LLM_API_KEY` or
 `CREATIVITY_LLM_API_KEY_01` … `_10`, and `PLATFORM_DATA_DIR`
 (database + workspaces location, default `workspace/`).
 
-The intended local-first ownership is: **DeepSeek** plans and reviews complex
-work; **Qwen Coder** executes software, terminal, preview, and GitHub work;
-**Gemma 3** analyzes current-message images and screenshots; **Qwen2.5 3B**
-conducts source-grounded web research; and **Llama 3.2 3B** supplies creative
-direction and beautiful UI guidance. If no image reference is attached, the
-creativity specialist still produces a design brief from its own design
-knowledge. The platform, not an LLM, retains confirmation gates for login,
-payments, destructive actions, browser takeover, publishing, and pushes.
+For the zero-cost Ollama setup in [`.env.example`](.env.example), install only
+the models you want on the host that runs Ollama. Example roles are
+`qwen2.5-coder:7b` (coding), `gemma3:4b` (vision), `deepseek-r1:7b`
+(required control unit), `qwen2.5:3b` (research), and `llama3.2:3b` (design).
+Ollama's Q4_K_M catalog entries for the last two are approximately 1.9 GB and
+2.0 GB. Downloads are free but consume disk/RAM and carry different license
+terms. A role is configured only when its own model settings are loaded; named
+roles never silently fall back to another model. The Docker container reaches
+host Ollama at `host.docker.internal:11434`.
+
+**DeepSeek is the mandatory control unit for every new user message.** It
+receives the message before any answer/task branch, chooses either a direct
+response or a validated capability workflow, and selects the capability IDs
+and handlers. **Qwen Coder** executes selected software, terminal, preview, and
+GitHub work; **Gemma 3** analyzes selected image/screenshot work; **Qwen2.5 3B**
+conducts selected source-grounded web research; and **Llama 3.2 3B** supplies
+selected creative direction. The platform validates DeepSeek's plan against
+the local capability/model registry and executes the selected handlers. The
+registry also inventories UI/platform features and known limits, but those are
+not offered as executable task steps; the planner sees only direct-answer,
+model-backed, and supported user-handoff capabilities. DeepSeek's selected order
+is retained, so a user step can block coding or pause after a verified build.
+Scheduled prompts are routed through the same DeepSeek controller. It
+does not use a keyword classifier or an automatic fallback route; if DeepSeek
+is unavailable or returns an invalid plan, the request fails visibly without
+being reclassified by another layer. Named roles are pinned to their configured
+endpoint so a failed DeepSeek, research, or design model cannot silently become
+the default or a cloud model.
+
+Chat has no answer/inspect/plan/build selector. Messages sent while a task is
+running also go through DeepSeek first: it decides whether the message is a
+conversational reply or compatible guidance for the active workflow. Compatible
+guidance resumes the task; a request needing handlers outside the active plan is
+rejected with a retry-after-completion message rather than being silently
+misrouted. Explicit UI controls such as Stop and confirmation dialogs remain
+platform actions. The platform—not the model—retains authorization and
+confirmation gates for login, payments, destructive actions, browser takeover,
+publishing, and pushes.
 
 ## Tests
 
@@ -177,12 +201,17 @@ page are faked; git operations run against local bare repositories.
   arbitrary source contents. Full task-level Docker isolation, durable browser
   profiles, multi-agent roles, app hosting, and RL trajectory integration remain
   follow-on subsystems rather than being represented as complete here.
-- The optional reasoning profile is disabled by default. When enabled, it plans and
-  reviews complex or risky tasks, while Qwen remains the only model that executes
-  tools; deterministic validation remains authoritative.
-- Phase A adds deterministic request classification before the first tool call. The
-  task evidence records intent, complexity, risk, and the selected execution budget;
-  this metadata is advisory and never overrides explicit user intent.
+- DeepSeek is required for new chat and task-routing requests. Set
+  `REASONING_LLM_MODEL` and `REASONING_LLM_ENABLED=true` to enable it. There is
+  deliberately no regex/keyword fallback when that local model is unavailable.
+- DeepSeek chooses the workflow; capability IDs, owning handlers, dependencies,
+  local model availability, and permission gates are validated deterministically
+  before execution. This deterministic validation is not an intent classifier
+  and cannot change the selected route into a different one.
+- `capabilities.json` is a routing/validation catalog, not 400 separately
+  implemented plugins. Only capabilities connected to an existing handler and
+  tool have executable behavior; unsupported or uncompleted capabilities must
+  fail visibly rather than being reported as complete.
 - Workspace shell commands are classified as `safe`, `confirmation`, or `blocked`.
   Dependency installs, recursive deletion, privileged operations, and external Git
   changes require human approval. Remote scripts piped into a shell and direct

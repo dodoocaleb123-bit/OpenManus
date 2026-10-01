@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from app.platform.repository_map import build_repository_map
 from app.platform.sources import extract_sources
 from app.server import create_app
+from test_support import install_fake_controller
 
 
 def test_irreversible_api_actions_require_confirmation(tmp_path: Path):
@@ -45,8 +46,10 @@ def test_sources_are_structured_and_deduplicated():
     assert sources[0]["title"] == "Pricing"
 
 
-def test_metrics_and_evidence_include_sources(tmp_path: Path):
+def test_metrics_and_evidence_include_sources(tmp_path: Path, monkeypatch):
+    install_fake_controller(monkeypatch, capability_ids=[147], route="execute")
     client = TestClient(create_app(tmp_path, check_llm=False))
+    client.app.state.orchestrator.start = lambda task: None
     project = client.post("/api/projects", json={"name": "metrics"}).json()
     metrics = client.get("/api/metrics")
     assert metrics.status_code == 200

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.platform.phase_d import evaluate_trajectory, normalize_policy, validate_plugin_manifest
 from app.platform.store import PlatformStore
 from app.server import create_app
+from test_support import install_fake_controller
 
 
 def test_phase_d_policy_and_manifest_validation():
@@ -36,9 +37,11 @@ def test_phase_d_store_initializes_owner_policy_and_registry(tmp_path: Path):
     assert store.list_plugins()[0]["manifest_hash"] == plugin["manifest_hash"]
 
 
-def test_phase_d_api_and_evaluation(tmp_path: Path):
+def test_phase_d_api_and_evaluation(tmp_path: Path, monkeypatch):
+    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
     app = create_app(tmp_path, check_llm=False)
     with TestClient(app) as client:
+        client.app.state.orchestrator.start = lambda task: None
         project = client.post("/api/projects", json={"name": "phase-d"}).json()
         assert client.get("/api/capabilities/models").status_code == 200
         assert client.post("/api/plugins", json={"manifest": {"name": "safe-tool", "version": "1.0.0", "capabilities": [], "permissions": []}}).status_code == 200

@@ -30,17 +30,26 @@ def profiles() -> tuple[ModelProfile, ...]:
 
 
 def status_from_env() -> list[dict[str, Any]]:
-    return [{
-        "role": profile.role,
-        "config_name": profile.config_name,
-        "model": os.getenv(profile.env_model, profile.default_model),
-        "configured": bool(os.getenv(profile.env_model)),
-        "capability": profile.capability,
-        "supports": list(profile.supports),
-        "enabled": True,
-        "vision": "vision" in profile.supports,
-        "tools": "tools" in profile.supports,
-        "coding": "coding" in profile.supports,
-        "planning": "planning" in profile.supports or profile.role == "deepseek",
-        "status": "configured" if os.getenv(profile.env_model) else "default",
-    } for profile in PROFILES]
+    from app.config import config
+
+    statuses: list[dict[str, Any]] = []
+    for profile in PROFILES:
+        model_config = config.llm.get(profile.config_name)
+        if model_config is None and profile.role == "qwen_coder":
+            model_config = config.llm.get("default")
+        configured = model_config is not None
+        statuses.append({
+            "role": profile.role,
+            "config_name": profile.config_name,
+            "model": model_config.model if model_config else profile.default_model,
+            "configured": configured,
+            "capability": profile.capability,
+            "supports": list(profile.supports),
+            "enabled": configured,
+            "vision": "vision" in profile.supports,
+            "tools": "tools" in profile.supports,
+            "coding": "coding" in profile.supports,
+            "planning": "planning" in profile.supports or profile.role == "deepseek",
+            "status": "configured" if configured else "not_configured",
+        })
+    return statuses

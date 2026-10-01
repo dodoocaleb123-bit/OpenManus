@@ -102,7 +102,6 @@ class Task(BaseModel):
     recovery: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: Optional[str] = None
     last_heartbeat: Optional[datetime] = None
-    execution_mode: str = "implement"
     first_token_ms: Optional[int] = None
     # Live-only (not persisted): question the agent is waiting on the user to answer.
     pending_question: Optional[str] = None
