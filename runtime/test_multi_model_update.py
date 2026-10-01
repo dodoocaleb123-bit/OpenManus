@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 
 from app.platform.capability_registry import capabilities, get_capability, load_registry
 from app.platform.control_unit import ControlUnit
+from app.platform.execution_state import ExecutionStateMachine
+from app.platform.orchestrator import _is_design_only_task
 from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, order_steps, validate_result
 from app.server import create_app
 
@@ -46,6 +48,23 @@ def test_order_steps_rejects_cycles_and_preserves_dependencies():
     assert [step["step_id"] for step in ordered] == ["a", "b"]
     with pytest.raises(ValueError):
         order_steps([{ "step_id": "a", "depends_on": ["b"] }, {"step_id": "b", "depends_on": ["a"]}])
+
+
+def test_state_machine_enforces_dependencies_and_user_pause():
+    state = ExecutionStateMachine({"registry_version": "test", "steps": [
+        {"step_id": "design", "capability_id": 135, "handler": "llama3.2_3b", "depends_on": []},
+        {"step_id": "user", "capability_id": 225, "handler": "user", "depends_on": ["design"]},
+    ]})
+    state.start("design")
+    state.finish(evidence={"brief": True})
+    state.pause_for_user("user", "Take over the browser")
+    assert state.as_dict()["status"] == "waiting_for_user"
+    assert state.steps["user"].evidence["required_action"] == "Take over the browser"
+
+
+def test_design_only_requests_do_not_count_as_implementation():
+    assert _is_design_only_task("Design a beautiful mobile dashboard with a modern palette")
+    assert not _is_design_only_task("Design and build a beautiful mobile dashboard")
 
 
 def test_completed_handoff_requires_evidence():
