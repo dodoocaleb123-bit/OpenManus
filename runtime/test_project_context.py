@@ -52,7 +52,8 @@ def test_task_conversation_context_allows_explicit_continuity():
 
     messages = [
         SimpleNamespace(task_id="old-task", role="user", content="Use the pink cosmetics palette."),
-        SimpleNamespace(task_id="old-task", role="assistant", content="The palette uses blush and rose tones."),
+        SimpleNamespace(task_id="old-task", role="assistant", content="The cosmetics design uses blush and rose tones."),
+        SimpleNamespace(task_id="unrelated-task", role="user", content="Solve the quadratic equation."),
         SimpleNamespace(task_id="new-task", role="user", content="Continue the previous design."),
     ]
 
@@ -60,3 +61,18 @@ def test_task_conversation_context_allows_explicit_continuity():
 
     assert "pink cosmetics palette" in context
     assert "Continue the previous design" in context
+    assert "quadratic equation" not in context
+
+
+def test_task_conversation_context_does_not_import_unmatched_explicit_history():
+    from types import SimpleNamespace
+    from app.platform.context import task_conversation_context
+
+    messages = [
+        SimpleNamespace(task_id="old-task", role="user", content="Continue the database migration."),
+        SimpleNamespace(task_id="new-task", role="user", content="Continue the previous design."),
+    ]
+
+    context = task_conversation_context(messages, "Continue the previous design.", "new-task")
+
+    assert "database migration" not in context

@@ -38,10 +38,23 @@ PRIOR_CONTEXT_RE = re.compile(
     r"what\s+i\s+(?:said|sent)|that\s+(?:project|page|file|image|design|answer|task))\b",
     re.IGNORECASE,
 )
+CONTEXT_STOPWORDS = {
+    "about", "again", "before", "continue", "earlier", "from", "have", "same",
+    "that", "the", "this", "use", "using", "what", "when", "with", "previous",
+    "prior", "above", "mentioned", "said", "sent", "discussed", "project", "task",
+}
 
 
 def _query_tokens(query: str) -> set[str]:
     return {token.casefold().strip("./-") for token in TOKEN_RE.findall(query) if len(token.strip("./-")) >= 3}
+
+
+def _context_relevance_tokens(query: str) -> set[str]:
+    """Return meaningful terms for matching explicitly requested prior context."""
+    return {
+        token for token in _query_tokens(query)
+        if token not in CONTEXT_STOPWORDS and len(token) >= 4
+    }
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
@@ -153,14 +166,31 @@ def build_workspace_context(
 
 
 def task_conversation_context(messages: Iterable[object], current_prompt: str, task_id: str) -> str:
-    """Return current-task history unless the user explicitly requests continuity."""
+    """Return current-task history plus only relevant explicitly requested prior context."""
     items = list(messages)
     current = [item for item in items if getattr(item, "task_id", None) == task_id]
     if not PRIOR_CONTEXT_RE.search(current_prompt):
         selected = current
     else:
         prior = [item for item in items if getattr(item, "task_id", None) != task_id]
-        selected = prior[-10:] + current
+        terms = _context_relevance_tokens(current_prompt)
+        ranked_tasks: dict[str, tuple[int, int]] = {}
+        for index, item in enumerate(prior):
+            content = str(getattr(item, "content", ""))
+            message_terms = _context_relevance_tokens(content)
+            score = len(terms & message_terms)
+            if score:
+                task_key = str(getattr(item, "task_id", ""))
+                previous = ranked_tasks.get(task_key)
+                if previous is None or score > previous[0]:
+                    ranked_tasks[task_key] = (score, index)
+        relevant_task_ids = {
+            task_id
+            for task_id, _ in sorted(
+                ranked_tasks.items(), key=lambda row: (-row[1][0], -row[1][1])
+            )[:3]
+        }
+        selected = [item for item in prior if str(getattr(item, "task_id", "")) in relevant_task_ids] + current
     return "\n".join(
         f"{getattr(item, 'role', 'unknown').upper()}: {getattr(item, 'content', '')}"
         for item in selected
