@@ -57,7 +57,7 @@ def test_deepseek_delegates_attached_image_to_vision_capability(tmp_path, monkey
     assert "gemma3" in {step["handler"] for step in response.json()["task"]["plan"]["control_unit_plan"]["steps"]}
 
 
-def test_deepseek_sees_only_referenced_older_image_as_current_context(tmp_path, monkeypatch):
+def test_old_image_is_not_reattached_by_prompt_keywords_or_filename(tmp_path, monkeypatch):
     def choose_route(prompt, context):
         if any(item["filename"] == "diagram.png" for item in context.get("current_attachments", [])):
             return "execute", [131]
@@ -80,12 +80,50 @@ def test_deepseek_sees_only_referenced_older_image_as_current_context(tmp_path, 
     client.app.state.orchestrator.start = lambda task: None
     related = client.post(
         f"/api/projects/{project['id']}/chat",
-        json={"message": "Please describe the uploaded image."},
+        json={"message": "Please describe the last uploaded image diagram.png."},
     )
     assert related.status_code == 200
-    assert calls[1]["context"]["current_attachments"][0]["filename"] == "diagram.png"
-    assert calls[1]["attachment_ids"] == [upload["id"]]
-    assert related.json()["kind"] == "task"
+    assert calls[1]["context"]["current_attachments"] == []
+    assert calls[1]["attachment_ids"] == []
+    assert related.json()["kind"] == "chat"
+    assert "base64_images" not in CapturingLLM.captured[-1]
+
+    # Only a deliberate current-message attachment makes the existing upload
+    # visible to Gemma; text alone cannot reselect an older project's image.
+    attached = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={"message": "Please describe diagram.png.", "attachment_ids": [upload["id"]]},
+    )
+    assert attached.status_code == 200
+    assert calls[2]["attachment_ids"] == [upload["id"]]
+    assert attached.json()["kind"] == "task"
+
+
+def test_multiple_current_images_and_question_are_sent_to_deepseek_only_when_attached(tmp_path, monkeypatch):
+    calls = install_fake_controller(monkeypatch, capability_ids=[131], route="execute")
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = make_project(client)
+    first = client.post(
+        f"/api/projects/{project['id']}/uploads",
+        files={"file": ("equation.png", b"first", "image/png")},
+    ).json()
+    second = client.post(
+        f"/api/projects/{project['id']}/uploads",
+        files={"file": ("diagram.png", b"second", "image/png")},
+    ).json()
+    client.app.state.orchestrator.start = lambda task: None
+    response = client.post(
+        f"/api/projects/{project['id']}/chat",
+        json={
+            "message": "Solve the math in the attached images and explain your reasoning.",
+            "attachment_ids": [second["id"], first["id"]],
+        },
+    )
+    assert response.status_code == 200
+    assert calls[0]["prompt"] == "Solve the math in the attached images and explain your reasoning."
+    assert calls[0]["attachment_ids"] == [second["id"], first["id"]]
+    assert {item["filename"] for item in calls[0]["context"]["current_attachments"]} == {"equation.png", "diagram.png"}
+    assert response.json()["task"]["plan"]["attachment_ids"] == [second["id"], first["id"]]
 
 
 def test_chat_returns_actionable_rate_limit_error(tmp_path, monkeypatch):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from app.config import apply_llm_environment_overrides, config
 from app.llm import LLM
 from app.platform.reasoning import reasoning_enabled
@@ -69,6 +71,25 @@ def test_unconfigured_specialist_cannot_silently_use_default_model(monkeypatch):
         assert "not configured" in str(exc)
     else:
         raise AssertionError("researcher must not silently fall back to the default model")
+
+
+def test_malformed_specialist_json_emits_failure_not_completion(monkeypatch):
+    events = []
+
+    async def emit(kind, message, data):
+        events.append(kind)
+
+    class MalformedModel:
+        model = "llama3.2:3b"
+
+        async def ask(self, *args, **kwargs):
+            return "This is not JSON."
+
+    gateway = SpecialistGateway(config=config, emit=emit)
+    monkeypatch.setattr(gateway, "llm", lambda role: MalformedModel())
+    result = asyncio.run(gateway.ask_json("designer", instruction="Design the page"))
+    assert result["parse_error"] == "specialist did not return JSON"
+    assert events == ["specialist.started", "specialist.failed"]
 
 
 def test_zip_design_references_are_normalized_for_local_design_handoffs():

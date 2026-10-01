@@ -126,6 +126,12 @@ class SpecialistGateway:
         safe_response = strip_think_tags(response)
         parsed = _parse_json(safe_response)
         result = {"role": role, "model": llm.model, "raw_response": _clip(safe_response), **parsed}
+        if result.get("parse_error"):
+            await self._event(
+                "specialist.failed", f"{role} specialist returned no valid structured result",
+                {"role": role, "model": llm.model, "error": result["parse_error"]},
+            )
+            return result
         await self._event("specialist.completed", f"{role} specialist completed", {"role": role, "model": llm.model, "result": result})
         return result
 

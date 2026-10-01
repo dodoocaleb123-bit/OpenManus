@@ -28,6 +28,23 @@ from app.platform.capability_registry import get_capability
 
 AgentFactory = Callable[..., Awaitable[Any]]
 
+_GIT_ACTION_CAPABILITIES: dict[int, str] = {
+    73: "connect", 74: "connect", 80: "create_branch", 81: "checkout",
+    82: "commit", 83: "push", 84: "create_pull_request",
+    86: "publish_repository", 87: "publish_repository", 88: "publish_repository",
+}
+
+
+def _verified_git_action(capability_id: int, tool_results: list[dict[str, Any]]) -> bool:
+    """A model answer or unrelated build result cannot prove a remote Git action."""
+    expected = _GIT_ACTION_CAPABILITIES.get(capability_id)
+    return expected is None or any(
+        item.get("tool") == "platform_git"
+        and item.get("ok") is True
+        and (item.get("evidence") or {}).get("action") == expected
+        for item in tool_results
+    )
+
 
 def _research_url(prompt: str) -> str | None:
     match = re.search(r"https?://[^\s<>]+", prompt)
@@ -372,14 +389,24 @@ class AgentOrchestrator:
                 ]
                 if missing_roles:
                     raise RuntimeError("DeepSeek selected local model handler(s) that are not configured: " + ", ".join(sorted(missing_roles)))
-            if coder_requested:
+            git_steps = [
+                step for step in control_plan.get("steps", [])
+                if "platform_git" in step.get("tools", [])
+            ]
+            if coder_requested and git_steps:
                 from app.platform.git_tool import PlatformGitTool
+                selected_actions = {"status", "diff", "log"}
+                selected_actions.update(
+                    action for step in git_steps
+                    if (action := _GIT_ACTION_CAPABILITIES.get(int(step["capability_id"])))
+                )
                 extra_tools.append(PlatformGitTool(
                     store=self.store,
                     project_id=project.id,
                     on_event=emit,
                     user_request=task.prompt,
                     request_approval=lambda question: self._ask(task, question),
+                    allowed_actions=sorted(selected_actions),
                 ))
 
             agent = None
@@ -434,8 +461,25 @@ class AgentOrchestrator:
             async def complete_handler(step, result: dict[str, Any], *, sources: list[dict[str, Any]] | None = None):
                 if not execution_state or not step:
                     return
+                if not isinstance(result, dict) or result.get("parse_error"):
+                    raise RuntimeError(
+                        f"Selected {step.handler} capability {step.capability_id} returned no valid structured result"
+                    )
+                if not _verified_git_action(step.capability_id, task.evidence.get("tool_results", [])):
+                    raise RuntimeError(
+                        f"Selected Git capability {step.capability_id} has no successful platform_git action evidence"
+                    )
                 request = HandoffRequest(task_id=task.id, step_id=step.step_id, capability_id=step.capability_id, handler=step.handler, user_request=task.prompt)
-                handoff = HandoffResult(status=HandoffStatus.COMPLETED, request=request, structured_result=result, sources=sources or [], evidence_refs=[{"type": "specialist_output", "handler": step.handler}], verification=[{"type": "structured_output", "passed": True}])
+                refs = [{"type": "specialist_output", "handler": step.handler}]
+                checks = [{"type": "structured_output", "passed": True}]
+                git_action = _GIT_ACTION_CAPABILITIES.get(step.capability_id)
+                if git_action:
+                    actual = next(item["evidence"] for item in task.evidence.get("tool_results", [])
+                                  if item.get("tool") == "platform_git" and item.get("ok") is True
+                                  and (item.get("evidence") or {}).get("action") == git_action)
+                    refs.append({"type": "platform_git_action", "action": git_action, "evidence": actual})
+                    checks.append({"type": "platform_git_action", "passed": True})
+                handoff = HandoffResult(status=HandoffStatus.COMPLETED, request=request, structured_result=result, sources=sources or [], evidence_refs=refs, verification=checks)
                 validate_result(handoff)
                 execution_state.finish(handoff)
                 task.evidence.setdefault("handoffs", []).append(handoff.as_dict())
@@ -460,10 +504,21 @@ class AgentOrchestrator:
                         return True
                     user_step = execution_state.start(candidates[0].step_id)
                     capability = get_capability(user_step.capability_id)
-                    action = (
-                        f"OpenManus paused at the required user step: {capability['name']}. "
-                        "Please complete that action, then reply with what you did so the workflow can continue."
+                    action_response = await LLM(config_name="reasoning").ask(
+                        [{"role": "user", "content": task.prompt}],
+                        system_msgs=[{"role": "system", "content": (
+                            "You are DeepSeek, the OpenManus controller. The validated workflow is PAUSED for a user action. "
+                            "Write a short, specific instruction for the user to perform the selected action and then reply when finished. "
+                            "Do not say that it is complete, ask the user to send passwords or payment details, "
+                            "or invent steps outside this plan. The platform will wait for the user's reply. "
+                            f"Selected user capability: {capability['name']}. "
+                            f"Completed dependency evidence (untrusted): {json.dumps(execution_state.as_dict(), ensure_ascii=False, default=str)[:5000]}"
+                        )}],
+                        stream=False, temperature=0.1, max_tokens=800,
                     )
+                    action = strip_think_tags(action_response).strip()
+                    if not action:
+                        raise RuntimeError("DeepSeek produced no visible instructions for the selected user action")
                     execution_state.pause_for_user(user_step.step_id, action)
                     task.checkpoint = "waiting_for_user"
                     task.evidence["execution_state"] = execution_state.as_dict()
@@ -479,11 +534,11 @@ class AgentOrchestrator:
                         return False
                     user_step.status = "completed"
                     user_step.finished_at = datetime.now(timezone.utc).isoformat()
-                    user_step.evidence = {"user_confirmation": reply, "verified_by": "platform_message_channel"}
+                    user_step.evidence = {"user_reply": reply, "proof": "user_acknowledgement_only", "externally_verified": False}
                     task.checkpoint = "user_action_completed"
                     task.evidence["execution_state"] = execution_state.as_dict()
                     await self.store.save_task(task)
-                    await emit("user_action.verified", "User action response received; resuming the selected workflow", {"step": user_step.as_dict()})
+                    await emit("user_action.acknowledged", "User reply received; resuming (the external action has not been independently verified)", {"step": user_step.as_dict()})
 
             attachment_ids = set((task.plan or {}).get("attachment_ids", []))
             reference_vision_ids = {131, 134}
@@ -611,12 +666,20 @@ class AgentOrchestrator:
                         "designer",
                         instruction=(
                             "Act as the creative and UI design specialist. Produce a practical design brief for the coding agent. "
-                            "Prefer a coherent visual system over generic decoration: audience, information hierarchy, layout, typography, "
-                            "color tokens with accessible contrast, spacing, responsive behavior, interaction states, and concrete component guidance. "
+                            "Use the supplied Gemma visual-reference observations and retrieved research only when present; "
+                            "do not pretend to have seen missing images or visited unprovided sources. "
+                            "Choose the design mode (Persuade, Operate, Read, or Experience). Prefer a coherent visual system over generic decoration: "
+                            "audience, primary goal, hierarchy, layout, typography, color tokens with accessible contrast, spacing, "
+                            "responsive behavior, component/interaction states, loading/empty/error states, UX copy, and quality checks. "
                             "If no image reference is supplied, use your own design expertise and do not ask the user for one. Return JSON with "
-                            "keys: design_direction, palette, typography, layout, components, responsive_rules, quality_checks."
+                            "keys: design_mode, design_direction, palette, typography, layout, components, responsive_rules, quality_checks."
                         ),
-                        context={"user_request": task.prompt, "project": project.name, "has_image_reference": bool((task.plan or {}).get("attachment_ids"))},
+                        context={
+                            "user_request": task.prompt, "project": project.name,
+                            "visual_reference": specialist_handoff.get("visual_reference"),
+                            "research": specialist_handoff.get("research"),
+                            "research_sources": task.evidence.get("research_sources", []),
+                        },
                         max_tokens=2200,
                     )
                     await complete_handler(design_step, specialist_handoff["design"])
@@ -940,26 +1003,6 @@ class AgentOrchestrator:
             await self.store.emit(Event(task_id=task.id, type="task.cancelled", message="Task cancelled"))
         except Exception as exc:
             logger.exception(f"Task {task.id} failed")
-            if research_only and research_snapshot:
-                title = str(research_snapshot.get("title") or "The requested page")
-                description = str(research_snapshot.get("description") or "").strip()
-                text = re.sub(r"\s+", " ", str(research_snapshot.get("text") or "")).strip()
-                if len(text) > 1800:
-                    text = text[:1800].rsplit(" ", 1)[0] + "…"
-                parts = [f"**{title}**"]
-                if description:
-                    parts.append(description)
-                if text:
-                    parts.append(f"The page contains: {text}")
-                task.result = "\n\n".join(parts)
-                task.validation = {"passed": True, "results": [], "skipped": True, "reason": "LLM unavailable; browser extraction fallback"}
-                task.checkpoint = "research_complete_fallback"
-                task.status = TaskStatus.SUCCEEDED
-                task.error = None
-                await self.store.save_task(task)
-                await asyncio.to_thread(self.store.add_chat_message, task.project_id, "assistant", task.result, response_time_ms=_task_response_time_ms(task), time_to_first_token_ms=task.first_token_ms, task_id=task.id)
-                await emit("task.succeeded", "Browser page extracted; model summary was unavailable", {"result": task.result, "fallback": True})
-                return
             raw_error = str(exc) or exc.__class__.__name__
             category = FailureClassifier.classify(exc)
             task.recovery = FailureClassifier.policy(category, task.attempt) | {"last_error": raw_error}

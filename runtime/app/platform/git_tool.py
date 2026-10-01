@@ -24,8 +24,8 @@ class PlatformGitTool(BaseTool):
         "- push: push the current branch to GitHub.\n"
         "- create_pull_request {title, body, base?, draft?}: pushes and opens a PR from the current branch.\n"
         "- publish_repository {repo_name, private?, description?}: create a NEW GitHub repository for a "
-        "project that has none, commit everything and push. Returns the repository URL. Once the user has "
-        "asked OpenManus to make and ship a change, push/PR/publish actions may run automatically."
+        "project that has none, commit everything and push. Returns the repository URL. "
+        "Remote mutations require an explicit user request or user approval."
     )
     parameters: dict = {
         "type": "object",
@@ -57,6 +57,7 @@ class PlatformGitTool(BaseTool):
     on_event: Any = None  # async (type, message, data) -> None
     user_request: str = ""
     request_approval: Any = None  # async (question) -> user's reply
+    allowed_actions: list[str] | None = None  # None is retained for direct, user-initiated tool invocations.
 
     class Config:
         arbitrary_types_allowed = True
@@ -74,9 +75,9 @@ class PlatformGitTool(BaseTool):
     def _explicitly_requested(self, action: str) -> bool:
         text = self.user_request.casefold()
         action_words = {
-            "push": r"\bpush\b",
-            "create_pull_request": r"\b(?:create|open|submit|draft)\b.{0,40}\b(?:pull request|pr)\b|\b(?:pull request|pr)\b.{0,40}\b(?:create|open|submit)\b",
-            "publish_repository": r"\bpublish\b.{0,40}\b(?:github\s+)?(?:repo|repository)\b|\bcreate\b.{0,40}\b(?:github\s+)?(?:repo|repository)\b",
+            "push": r"(?:^|[.!?]\s*)(?:(?:please|now)\s+|(?:can|could|would)\s+you\s+|i\s+want\s+you\s+to\s+)*(?:push\b|(?:finish|update|edit|build|fix|implement|create)\b[^?\n.!]{0,100}\b(?:and|then)\s+push\b)",
+            "create_pull_request": r"(?:^|[.!?]\s*)(?:(?:please|now)\s+|(?:can|could|would)\s+you\s+|i\s+want\s+you\s+to\s+)*(?:create|open|submit|draft)\b.{0,40}\b(?:pull request|pr)\b",
+            "publish_repository": r"(?:^|[.!?]\s*)(?:(?:please|now)\s+|(?:can|could|would)\s+you\s+|i\s+want\s+you\s+to\s+)*(?:publish|create)\b.{0,40}\b(?:github\s+)?(?:repo|repository)\b",
         }
         if not re.search(action_words.get(action, r"$^"), text):
             return False
@@ -92,22 +93,31 @@ class PlatformGitTool(BaseTool):
     async def _approve_external_action(self, action: str, summary: str) -> str | None:
         if self._explicitly_prohibited(action):
             return "The user explicitly prohibited this GitHub action; no remote change was made."
-        # The user has delegated repository shipping to OpenManus. Keep the
-        # explicit-prohibition check, but do not stop a build to ask again for
-        # approval after the user has already requested the implementation.
-        source = "explicit_user_request" if self._explicitly_requested(action) else "delegated_user_authority"
+        source = "explicit_user_request"
+        if not self._explicitly_requested(action):
+            if self.request_approval is None:
+                return "This remote GitHub action was not requested. Ask the user to approve it before proceeding."
+            response = await self.request_approval(f"May OpenManus {summary}? Reply 'yes' to authorize this GitHub action or 'no' to decline.")
+            if str(response or "").strip().casefold() not in {"yes", "y", "approve", "approved", "confirm", "confirmed", "go ahead", "proceed"}:
+                return "The user did not approve this GitHub action; no remote change was made."
+            source = "user_approval"
         await self._notify("github.action.approved", f"Authorized GitHub action: {action}", {"action": action, "approval_source": source})
         return None
 
     async def execute(self, **kwargs) -> ToolResult:
         action = kwargs.get("action")
+        if self.allowed_actions is not None and action not in self.allowed_actions:
+            return self.fail_response(
+                "This GitHub action was not selected in the current DeepSeek capability plan.",
+                evidence={"action": action, "allowed": False},
+            )
         try:
             svc = self._service()
             git = svc.git
             external_summaries = {
-                "push": "push the current branch and its committed changes to the connected GitHub repository",
-                "create_pull_request": "push the current branch and open the requested pull request",
-                "publish_repository": "create a GitHub repository and push this project to it",
+                "push": f"push project {svc.project.name} branch {svc.project.branch or 'current'} to {svc.project.repository or 'the connected GitHub repository'}",
+                "create_pull_request": f"push branch {svc.project.branch or 'current'} to {svc.project.repository or 'the connected repository'} and open a pull request titled {kwargs.get('title') or '(untitled)'}",
+                "publish_repository": f"create the {'private' if kwargs.get('private', True) else 'public'} GitHub repository {kwargs.get('repo_name') or '(no name)'} and push this project to it",
             }
             if action in external_summaries:
                 denied = await self._approve_external_action(action, external_summaries[action])

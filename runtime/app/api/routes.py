@@ -218,10 +218,6 @@ UPLOAD_EXTENSIONS = {
     ".gif", ".webp", ".svg",
 }
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("PLATFORM_MAX_UPLOAD_MB", "250"))) * 1024 * 1024
-IMAGE_ORDINALS = {
-    "first": 0, "1": 0, "second": 1, "2": 1, "third": 2, "3": 2,
-    "fourth": 3, "4": 3, "fifth": 4, "5": 4,
-}
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -235,39 +231,6 @@ def _chat_response_budget(*, image: bool) -> int:
     name = "PLATFORM_IMAGE_MAX_TOKENS" if image else "PLATFORM_CHAT_MAX_TOKENS"
     default = 6144 if image else 2400
     return _env_int(name, default, 512)
-
-
-def referenced_images(text: str, uploads: list[UploadedFile], attachment_ids: list[str]) -> list[UploadedFile]:
-    """Return only images explicitly attached or referenced by this message."""
-    images = [item for item in uploads if (item.content_type or "").startswith("image/") and Path(item.stored_path).is_file()]
-    selected: list[UploadedFile] = []
-    by_id = set(attachment_ids)
-    selected.extend(item for item in images if item.id in by_id)
-    lowered = text.casefold()
-    if re.search(r"\b(do not|don't|dont|without|not)\s+(use|inspect|look at|consider)\b.{0,40}\b(image|picture|photo)\b", lowered):
-        return []
-
-    for item in images:
-        filename = item.filename.casefold()
-        stem = Path(item.filename).stem.casefold()
-        if filename in lowered or (stem and len(stem) >= 3 and re.search(rf"\b{re.escape(stem)}\b", lowered)):
-            selected.append(item)
-
-    ordinal_matches = re.findall(
-        r"\b(first|second|third|fourth|fifth|1|2|3|4|5)\s+(?:uploaded\s+)?(?:image|picture|photo)\b|\b(?:image|picture|photo)\s*(?:number\s*)?(1|2|3|4|5)\b",
-        lowered,
-    )
-    for match in ordinal_matches:
-        ordinal = next((part for part in match if part), None)
-        if ordinal is not None:
-            index = IMAGE_ORDINALS[ordinal]
-            if index < len(images):
-                selected.append(images[index])
-
-    if re.search(r"\b(this|that|the|last|latest|previous|current|uploaded|stored|saved|attached)\s+(image|picture|photo|screenshot)\b|\b(image|picture|photo|screenshot)\s+(above|attached|shown|uploaded|stored|saved)\b", lowered):
-        selected.append(images[-1] if images else None)
-    selected_ids = list(dict.fromkeys(item.id for item in selected if item))[-4:]
-    return [item for item in images if item.id in selected_ids]
 
 
 async def sse_event_stream(
@@ -813,8 +776,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             unknown_attachments = sorted(set(body.attachment_ids) - set(uploads_by_id))
             if unknown_attachments:
                 raise HTTPException(status_code=400, detail="One or more attachments do not belong to this project.")
-            image_uploads = referenced_images(text, uploads, body.attachment_ids)
-            plan_attachment_ids = list(dict.fromkeys([*body.attachment_ids, *(item.id for item in image_uploads)]))
+            plan_attachment_ids = list(dict.fromkeys(body.attachment_ids))
+            image_uploads = [
+                uploads_by_id[item_id] for item_id in plan_attachment_ids
+                if (uploads_by_id[item_id].content_type or "").startswith("image/")
+            ]
             project_memory = await asyncio.to_thread(store.get_project_memory, project_id)
             prior_history = await asyncio.to_thread(store.list_chat_messages, project_id, 12)
             prior_conversation = "\n".join(

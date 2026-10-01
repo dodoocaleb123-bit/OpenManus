@@ -160,6 +160,22 @@ terms. A role is configured only when its own model settings are loaded; named
 roles never silently fall back to another model. The Docker container reaches
 host Ollama at `host.docker.internal:11434`.
 
+After rebuilding and starting the container, test the *actual* host Ollama from
+inside it, without creating projects or sending data to an external API:
+
+```powershell
+docker exec openmanus python -m deploy.check_multimodel
+```
+
+This sequentially checks the **exact configured tags**, asks all five local
+models for one answer (including a generated red image for Gemma), tests the
+real DeepSeek controller on `Hellooo`, and requests Ollama to unload each model
+before the next. It prints pass/fail and elapsed time, not credentials or raw
+model text. A missing research/creativity role is a failure, not a substitute
+call to the default coder. Passing this probe is **not** the complete ZIP
+acceptance test: the multi-step build, screenshot, preview, GitHub and restart
+scenario must also pass on the laptop before calling the whole update complete.
+
 **DeepSeek is the mandatory control unit for every new user message.** It
 receives the message before any answer/task branch, chooses either a direct
 response or a validated capability workflow, and selects the capability IDs

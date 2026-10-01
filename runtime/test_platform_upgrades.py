@@ -139,7 +139,7 @@ def test_github_push_and_pull_request_routes_require_confirmation(tmp_path, monk
     assert pr.status_code == 428
 
 
-def test_git_tool_allows_delegated_external_changes_but_honors_prohibition():
+def test_git_tool_requires_explicit_request_or_user_approval_and_honors_prohibition():
     from app.platform.git_tool import PlatformGitTool
 
     explicit = PlatformGitTool(user_request="Finish the README changes and push them to GitHub")
@@ -152,7 +152,27 @@ def test_git_tool_allows_delegated_external_changes_but_honors_prohibition():
     assert "prohibited" in asyncio.run(blocked._approve_external_action("push", "push changes"))
 
     delegated = PlatformGitTool(user_request="Update the README")
-    assert asyncio.run(delegated._approve_external_action("push", "push the current branch")) is None
+    assert "not requested" in asyncio.run(delegated._approve_external_action("push", "push the current branch"))
+
+    question = PlatformGitTool(user_request="How do I push this project to GitHub?")
+    assert not question._explicitly_requested("push")
+    assert "not requested" in asyncio.run(question._approve_external_action("push", "push the current branch"))
+
+    prompts = []
+
+    async def approve(question):
+        prompts.append(question)
+        return "yes"
+
+    asked = PlatformGitTool(user_request="Update the README", request_approval=approve)
+    assert asyncio.run(asked._approve_external_action("push", "push the current branch")) is None
+    assert len(prompts) == 1 and "push the current branch" in prompts[0]
+
+    async def decline(question):
+        return "no"
+
+    declined = PlatformGitTool(user_request="Update the README", request_approval=decline)
+    assert "did not approve" in asyncio.run(declined._approve_external_action("publish_repository", "create a new GitHub repository"))
 
 
 def test_agent_redacts_secrets_and_blocks_secret_config_files(tmp_path):

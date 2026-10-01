@@ -301,7 +301,7 @@ def test_agent_question_is_answered_from_the_ui(tmp_path, monkeypatch):
     assert task["status"] == "succeeded" and task["result"] == "done after 1 run(s)"
     assert {"agent.thought", "human.reply", "coding.validation"} <= {e["type"] for e in events}
     assert agents[0].closed
-    assert set(agents[0].channels["tools"]) == {"platform_git"}
+    assert "platform_git" not in agents[0].channels["tools"]
 
 
 def test_active_task_conversation_and_handoff_reply_are_both_deepseek_routed(tmp_path, monkeypatch):
@@ -354,6 +354,17 @@ def test_active_task_conversation_and_handoff_reply_are_both_deepseek_routed(tmp
 
 
 def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path, monkeypatch):
+    class UserInstructionDeepSeek:
+        model = "deepseek-r1:7b"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            return "Check the first-stage preview yourself, then reply with the result."
+
+    monkeypatch.setattr("app.platform.orchestrator.LLM", UserInstructionDeepSeek)
+
     def selector(prompt, context):
         if context.get("active_workflow") and prompt == "request a new unselected step":
             return "execute", [5]
@@ -372,8 +383,9 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
     client, agents = make_client(tmp_path, script)
     with client:
         project = client.post("/api/projects", json={"name": "post-build-user-step"}).json()
-        task = client.post("/api/tasks", json={"project_id": project["id"], "prompt": "Build, then ask me to verify, then inspect the result"}).json()
-        wait_for(client, task["id"], has("user_action.required"))
+        task = client.post(f"/api/tasks", json={"project_id": project["id"], "prompt": "Build, then ask me to verify, then inspect the result"}).json()
+        events = wait_for(client, task["id"], has("user_action.required"))
+        assert any("Check the first-stage preview yourself" in event["message"] for event in events if event["type"] == "user_action.required")
         unselected = client.post(
             f"/api/tasks/{task['id']}/messages",
             json={"message": "request a new unselected step"},
@@ -394,8 +406,137 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
     assert (workspace / "second-stage.txt").read_text() == "resumed"
     assert len(run_prompts) == 2 and "CURRENT SELECTED STEP" in run_prompts[1]
     assert final_task["status"] == "succeeded"
-    assert any(event["type"] == "user_action.verified" for event in events)
+    assert any(event["type"] == "user_action.acknowledged" for event in events)
+    completed_user = next(step for step in final_task["evidence"]["execution_state"]["steps"] if step["handler"] == "user")
+    assert completed_user["evidence"]["externally_verified"] is False
     assert agents[0].closed
+
+
+def test_malformed_design_specialist_result_cannot_complete_capability(tmp_path, monkeypatch):
+    from app.platform.specialists import SpecialistGateway
+
+    install_fake_controller(monkeypatch, capability_ids=[135], route="execute")
+
+    async def malformed(self, role, *, instruction, context=None, max_tokens=1800):
+        return {"role": role, "parse_error": "specialist returned malformed JSON"}
+
+    monkeypatch.setattr(SpecialistGateway, "ask_json", malformed)
+    client, agents = make_client(tmp_path, lambda agent, prompt: None)
+    with client:
+        project = client.post("/api/projects", json={"name": "design-handoff"}).json()
+        launched = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Design a page, no code"})
+        assert launched.status_code == 200 and launched.json()["kind"] == "task"
+        task_id = launched.json()["task"]["id"]
+        wait_for(client, task_id, has("task.failed"))
+        task = client.get(f"/api/tasks/{task_id}").json()
+
+    assert task["status"] == "failed"
+    assert "no valid structured result" in task["error"]
+    assert not agents
+
+
+def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    from app.platform.specialists import SpecialistGateway
+
+    install_fake_controller(monkeypatch, capability_ids=[131, 135, 1], route="execute")
+    monkeypatch.setattr("app.platform.orchestrator.reasoning_enabled", lambda: False)
+    observed = {}
+
+    async def vision(self, *, prompt, image_urls, context=None):
+        assert len(image_urls) == 1 and image_urls[0].startswith("data:image/png;base64,")
+        return {"analysis": "Wide sidebar and compact navigation", "model": "gemma3:4b"}
+
+    async def design(self, role, *, instruction, context=None, max_tokens=1800):
+        if "Review the completed implementation" in instruction:
+            return {"passed": True}
+        observed["design_context"] = context
+        return {"design_mode": "Operate", "design_direction": "Compact information-dense navigation"}
+
+    monkeypatch.setattr(SpecialistGateway, "analyze_images", vision)
+    monkeypatch.setattr(SpecialistGateway, "ask_json", design)
+
+    async def build(agent, prompt):
+        observed["coder_prompt"] = prompt
+        Path(agent.channels["project"].workspace, "index.html").write_text("<h1>Dashboard</h1>")
+
+    client, agents = make_client(tmp_path, build)
+    with client:
+        project = client.post("/api/projects", json={"name": "image-design"}).json()
+        picture = Image.new("RGB", (32, 32), "red")
+        payload = BytesIO()
+        picture.save(payload, format="PNG")
+        upload = client.post(
+            f"/api/projects/{project['id']}/uploads",
+            files={"file": ("reference.png", payload.getvalue(), "image/png")},
+        ).json()
+        launched = client.post(
+            f"/api/projects/{project['id']}/chat",
+            json={"message": "Build a design based on this screenshot", "attachment_ids": [upload["id"]]},
+        )
+        assert launched.status_code == 200 and launched.json()["kind"] == "task"
+        task_id = launched.json()["task"]["id"]
+        wait_for(client, task_id, has("task.succeeded"))
+        task = client.get(f"/api/tasks/{task_id}").json()
+
+    assert task["status"] == "succeeded"
+    assert observed["design_context"]["visual_reference"]["analysis"] == "Wide sidebar and compact navigation"
+    assert "Compact information-dense navigation" in observed["coder_prompt"]
+    assert len(agents) == 1
+
+
+def test_selected_git_push_fails_without_platform_action_evidence(tmp_path, monkeypatch):
+    from app.platform.orchestrator import _verified_git_action
+
+    assert not _verified_git_action(83, [])
+    assert not _verified_git_action(83, [{"tool": "platform_git", "ok": False, "evidence": {"action": "push"}}])
+    assert not _verified_git_action(83, [{"tool": "platform_git", "ok": True, "evidence": {"action": "commit"}}])
+    assert _verified_git_action(83, [{"tool": "platform_git", "ok": True, "evidence": {"action": "push"}}])
+
+    install_fake_controller(monkeypatch, capability_ids=[83], route="execute")
+
+    async def unrelated(agent, prompt):
+        Path(agent.channels["project"].workspace, "unrelated.txt").write_text("unrelated")
+
+    client, agents = make_client(tmp_path, unrelated)
+    with client:
+        project = client.post("/api/projects", json={"name": "git-proof"}).json()
+        launched = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Push to GitHub"})
+        assert launched.status_code == 200 and launched.json()["kind"] == "task"
+        task_id = launched.json()["task"]["id"]
+        wait_for(client, task_id, has("task.failed"))
+        task = client.get(f"/api/tasks/{task_id}").json()
+
+    assert task["status"] == "failed"
+    assert "no successful platform_git action evidence" in task["error"]
+    assert "platform_git" in agents[0].channels["tools"]
+    git_tool = agents[0].channels["tools"]["platform_git"]
+    assert set(git_tool.allowed_actions) == {"status", "diff", "log", "push"}
+    denied = asyncio.run(git_tool.execute(action="publish_repository", repo_name="unselected"))
+    assert denied.error and "not selected" in denied.error
+
+
+def test_selected_git_push_handoff_records_matching_tool_provenance(tmp_path, monkeypatch):
+    install_fake_controller(monkeypatch, capability_ids=[83], route="execute")
+
+    async def proven(agent, prompt):
+        await agent.channels["emit"]("agent.tool_result", "platform_git done", {
+            "tool": "platform_git", "ok": True,
+            "evidence": {"action": "push", "pushed": True, "branch": "main"},
+        })
+
+    client, _ = make_client(tmp_path, proven)
+    with client:
+        project = client.post("/api/projects", json={"name": "git-proof"}).json()
+        launched = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Push this project to GitHub"})
+        task_id = launched.json()["task"]["id"]
+        wait_for(client, task_id, has("task.succeeded"))
+        task = client.get(f"/api/tasks/{task_id}").json()
+
+    assert task["status"] == "succeeded"
+    git_handoff = next(item for item in task["evidence"]["handoffs"] if item["capability_id"] == 83)
+    assert any(ref["type"] == "platform_git_action" and ref["evidence"]["pushed"] for ref in git_handoff["evidence_refs"])
 
 
 def test_messages_during_a_task_are_queued_for_the_agent(tmp_path):
