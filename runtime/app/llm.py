@@ -616,6 +616,7 @@ class LLM:
         max_tokens: Optional[int] = None,
         on_token: Optional[Callable[[str], Any]] = None,
         on_reset: Optional[Callable[[], Any]] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -671,6 +672,8 @@ class LLM:
                 "model": self.model,
                 "messages": messages,
             }
+            if response_format is not None:
+                params["response_format"] = response_format
 
             request_max_tokens = max(64, int(max_tokens)) if max_tokens is not None else self.max_tokens
             if is_reasoning_model(self.model):
@@ -696,8 +699,11 @@ class LLM:
                 self.last_finish_reason = getattr(response.choices[0], "finish_reason", None)
 
                 # Update token counts
+                usage = getattr(response, "usage", None)
                 self.update_token_count(
-                    response.usage.prompt_tokens, response.usage.completion_tokens
+                    getattr(usage, "prompt_tokens", None) or input_tokens,
+                    getattr(usage, "completion_tokens", None)
+                    or self.count_tokens(response.choices[0].message.content),
                 )
 
                 return response.choices[0].message.content

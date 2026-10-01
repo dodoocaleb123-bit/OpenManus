@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
+from openai import BadRequestError
 
 from app.platform.capability_registry import capabilities, get_capability, load_registry, validate_plan
 from app.platform.control_unit import ControlUnit
@@ -90,6 +92,8 @@ async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
         async def ask(self, messages, system_msgs=None, **kwargs):
             FakeDeepSeek.last_messages = messages
             FakeDeepSeek.last_system = system_msgs
+            if "Executable capability directory" not in system_msgs[0]["content"]:
+                return '{"route":"execute","needs_workspace_context":true,"summary":"research and build","intent":"engineering","capability_ids":[],"handlers":["qwen2.5_3b","llama3.2_3b","qwen_coder"],"rationale":[]}'
             return '{"route":"execute","needs_workspace_context":true,"summary":"research and build","intent":"engineering","capability_ids":[147,135,1],"excluded_capabilities":[],"requires_confirmation":false,"rationale":["source evidence before implementation"]}'
 
     raw_prompt = "  Research this URL, design and build the result  "
@@ -102,7 +106,58 @@ async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
     offered = FakeDeepSeek.last_system[0]["content"]
     assert "257\tplatform" not in offered
     assert "Delete projects" not in offered
-    assert "executable work only" in offered
+    assert "Executable capability directory" in offered
+
+
+@pytest.mark.asyncio
+async def test_greeting_routes_through_deepseek_without_full_catalog_and_recovers_think_only_reply():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+        base_url = "http://host.docker.internal:11434/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            self.calls.append((messages, system_msgs, kwargs))
+            if len(self.calls) == 1:
+                return "<think>working through a greeting</think>"
+            return '{"route":"respond","needs_workspace_context":false,"summary":"Greet the user","intent":"conversation","capability_ids":[166],"handlers":[],"rationale":[]}'
+
+    llm = FakeDeepSeek()
+    plan = await make_authoritative_plan(llm, prompt="Hellooo")
+    assert plan["route"] == "respond"
+    assert plan["selected_capabilities"] == [166]
+    assert len(llm.calls) == 2
+    assert all(messages == [{"role": "user", "content": "Hellooo"}] for messages, _, _ in llm.calls)
+    assert all("Executable capability directory" not in system[0]["content"] for _, system, _ in llm.calls)
+    assert all(kwargs["response_format"] == {"type": "json_object"} for _, _, kwargs in llm.calls)
+    assert llm.calls[1][2]["max_tokens"] >= 4096
+
+
+@pytest.mark.asyncio
+async def test_old_ollama_json_mode_rejection_retries_same_deepseek_model():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+        base_url = "http://host.docker.internal:11434/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def ask(self, messages, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs.get("response_format"):
+                raise BadRequestError(
+                    "unknown response_format",
+                    response=httpx.Response(400, request=httpx.Request("POST", self.base_url + "/chat/completions")),
+                    body={},
+                )
+            return '{"route":"respond","needs_workspace_context":false,"summary":"Greet the user","intent":"conversation","capability_ids":[166],"handlers":[]}'
+
+    llm = FakeDeepSeek()
+    plan = await make_authoritative_plan(llm, prompt="Hello")
+    assert plan["route"] == "respond"
+    assert [call["response_format"] for call in llm.calls] == [{"type": "json_object"}, None]
 
 
 @pytest.mark.asyncio
@@ -110,10 +165,12 @@ async def test_deepseek_cannot_select_an_unimplemented_platform_capability_as_wo
     class FakeDeepSeek:
         model = "deepseek-r1:7b"
 
-        async def ask(self, messages, **kwargs):
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            if "Executable capability directory" not in system_msgs[0]["content"]:
+                return '{"route":"execute","needs_workspace_context":false,"summary":"delete project","intent":"project operation","capability_ids":[],"handlers":["qwen_coder"],"rationale":[]}'
             return '{"route":"execute","needs_workspace_context":false,"summary":"delete project","intent":"project operation","capability_ids":[179],"excluded_capabilities":[],"requires_confirmation":true,"rationale":[]}'
 
-    with pytest.raises(ValueError, match="handler.*without an executable workflow adapter"):
+    with pytest.raises(ValueError, match="capability outside its chosen handler directory"):
         await make_authoritative_plan(FakeDeepSeek(), prompt="Delete the project")
 
 

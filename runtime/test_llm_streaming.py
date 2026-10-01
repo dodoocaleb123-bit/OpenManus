@@ -87,6 +87,45 @@ async def test_ask_stream_emits_tokens_and_returns_complete_text():
 
 
 @pytest.mark.asyncio
+async def test_ask_ollama_json_response_without_usage_metadata():
+    class Completion:
+        kwargs = None
+
+        async def create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"route":"respond"}'), finish_reason="stop")],
+                usage=None,
+            )
+
+    completion = Completion()
+    llm = object.__new__(LLM)
+    llm.model = "deepseek-r1:7b"
+    llm.max_tokens = 2048
+    llm.temperature = 0.1
+    llm.max_input_tokens = None
+    llm.total_input_tokens = 0
+    llm.total_completion_tokens = 0
+    llm.tokenizer = SimpleNamespace(encode=lambda text: list(text))
+    llm.token_counter = SimpleNamespace(count_message_tokens=lambda messages: 5)
+    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=completion))
+    llm.check_token_limit = lambda _: True
+    llm.count_tokens = lambda text: len(text)
+    llm.count_message_tokens = lambda messages: 5
+    recorded = []
+    llm.update_token_count = lambda prompt, completion: recorded.append((prompt, completion))
+
+    result = await llm.ask(
+        [{"role": "user", "content": "Hello"}],
+        stream=False,
+        response_format={"type": "json_object"},
+    )
+    assert result == '{"route":"respond"}'
+    assert completion.kwargs["response_format"] == {"type": "json_object"}
+    assert recorded == [(5, len(result))]
+
+
+@pytest.mark.asyncio
 async def test_ask_tool_stream_reassembles_function_name_and_arguments():
     first = SimpleNamespace(
         index=0,

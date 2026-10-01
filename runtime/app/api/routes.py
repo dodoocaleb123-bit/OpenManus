@@ -852,7 +852,11 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             except Exception as exc:
                 logger.exception("DeepSeek failed to route the user message")
                 audit("deepseek.authoritative_plan", project_id=project_id, status="failed")
-                raise HTTPException(status_code=503, detail="DeepSeek could not produce a valid request route. No fallback classifier was used; retry after checking the local DeepSeek model.") from exc
+                reason = str(exc)[:240] if isinstance(exc, ValueError) else "The local DeepSeek request failed or timed out"
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"DeepSeek could not complete the control decision: {reason}. No other model or keyword classifier was substituted; check the OpenManus container logs for the underlying error.",
+                ) from exc
 
             selected = [get_capability(int(step["capability_id"])) for step in authoritative["steps"]]
             plan = {

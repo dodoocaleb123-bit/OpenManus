@@ -17,6 +17,13 @@ unavailable, the original formula text remains visible as a fallback.
 Each project has one persistent conversation composer and no task/conversation
 mode selector. Every new message is sent to DeepSeek first, unchanged; DeepSeek
 chooses a direct response or an ordered, registry-validated capability workflow.
+Simple conversation goes through a compact DeepSeek control decision; the long
+executable-capability directory is sent only when DeepSeek decides specialist
+work is needed. This avoids overwhelming local DeepSeek with a full catalog
+for greetings or ordinary questions. On local Ollama, the control decision
+requests JSON mode and will retry once with a larger output budget if the
+model returns only reasoning or malformed JSON. Both attempts use DeepSeek,
+never a keyword classifier or substitute model.
 Only when DeepSeek asks for workspace context does the server add bounded local
 file excerpts. Secret-like filenames, generated directories, and oversized
 content are excluded. A per-project Memory pane stores up to 6,000 characters
@@ -131,6 +138,14 @@ Optional: `GITHUB_TOKEN` (repo scope) plus an optional `GITHUB_CLASSIC_TOKEN` fa
 `CREATIVITY_LLM_MODEL`, `CREATIVITY_LLM_BASE_URL`, `CREATIVITY_LLM_API_KEY` or
 `CREATIVITY_LLM_API_KEY_01` … `_10`, and `PLATFORM_DATA_DIR`
 (database + workspaces location, default `workspace/`).
+
+`OPENMANUS_CONTROLLER_MAX_TOKENS` (default `3072`, minimum `2048`) sets the
+first DeepSeek control-decision output budget independently of the older
+`REASONING_LLM_MAX_TOKENS` review setting. If a request fails at the decision
+stage, the chat error now includes a safe validation reason; on a local Docker
+deployment inspect `docker logs --tail 100 openmanus` for the underlying Ollama
+error. A working model configuration on this server cannot prove that the
+model is reachable inside your laptop's container.
 
 For the zero-cost Ollama setup in [`.env.example`](.env.example), install only
 the models you want on the host that runs Ollama. Example roles are

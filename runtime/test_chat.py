@@ -65,6 +65,38 @@ def test_project_chat_persists_messages_and_sends_verbatim_user_text_to_deepseek
     assert len(fresh.get(f"/api/projects/{project['id']}/chat").json()) == 4
 
 
+def test_greeting_uses_real_controller_path_and_deepseek_answer(tmp_path, monkeypatch):
+    from app.config import config
+
+    monkeypatch.setitem(config.llm, "reasoning", config.llm["default"])
+    monkeypatch.setattr("app.api.routes.reasoning_enabled", lambda: True)
+
+    class DeepSeekGreeting:
+        model = "deepseek-r1:7b"
+        base_url = "http://host.docker.internal:11434/v1"
+        calls = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
+            self.calls.append((messages, system_msgs, kwargs))
+            if kwargs.get("response_format"):
+                return '{"route":"respond","needs_workspace_context":false,"summary":"Greet the user","intent":"conversation","capability_ids":[166],"handlers":[],"rationale":[]}'
+            return "Hello! How can I help?"
+
+    monkeypatch.setattr("app.api.routes.LLM", DeepSeekGreeting)
+    client = TestClient(create_app(tmp_path, check_llm=False))
+    project = client.post("/api/projects", json={"name": "greeting"}).json()
+    response = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Hellooo"})
+    assert response.status_code == 200, response.text
+    assert response.json()["kind"] == "chat"
+    assert response.json()["assistant"]["content"] == "Hello! How can I help?"
+    assert len(DeepSeekGreeting.calls) == 2
+    assert DeepSeekGreeting.calls[0][0] == [{"role": "user", "content": "Hellooo"}]
+    assert "Executable capability directory" not in DeepSeekGreeting.calls[0][1][0]["content"]
+
+
 def test_project_chat_can_stream_visible_deltas_and_persist_final_reply(tmp_path, monkeypatch):
     calls = install_fake_controller(monkeypatch)
     monkeypatch.setattr("app.api.routes.LLM", StreamingChatLLM)
