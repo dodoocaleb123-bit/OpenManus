@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from app.config import config
+from app.platform.model_profiles import profiles
 
 
 def _models_url(base_url: str) -> str:
@@ -25,7 +26,7 @@ def _safe_url(value: str) -> str:
 
 
 async def check_model_role(role: str, *, timeout: float = 8.0) -> dict[str, Any]:
-    settings = config.llm.get(role)
+    settings = config.llm.get(role) or config.llm.get("default")
     if settings is None:
         return {"role": role, "configured": False, "reachable": False, "error": "role_not_configured"}
     url = _models_url(settings.base_url)
@@ -43,6 +44,13 @@ async def check_model_role(role: str, *, timeout: float = 8.0) -> dict[str, Any]
 
 
 async def check_all_model_roles() -> list[dict[str, Any]]:
-    roles = ("default", "vision", "reasoning", "research", "creativity")
+    roles = profiles()
     # Health checks are lightweight and bounded; model inference remains sequential.
-    return list(await asyncio.gather(*(check_model_role(role) for role in roles)))
+    results = []
+    for profile in roles:
+        result = await check_model_role(profile.config_name)
+        result["role"] = profile.role
+        result["config_name"] = profile.config_name
+        result["capability"] = profile.capability
+        results.append(result)
+    return results

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.platform.capability_registry import capabilities, registry_version, search_capabilities
+from app.platform.capability_registry import capabilities, registry_version, search_capabilities, validate_plan
 from app.platform.handoffs import order_steps
 
 
@@ -34,9 +34,9 @@ class ControlUnit:
         steps=[]
         for n, record in enumerate(selected, 1):
             depends = [f"step-{i}" for i, prior in enumerate(selected[:n-1], 1) if record["handler"] in {"qwen_coder", "llama3.2_3b", "deepseek"} and prior["handler"] in {"gemma3", "qwen2.5_3b", "llama3.2_3b"}]
-            steps.append({"step_id":f"step-{n}","capability_id":record["id"],"handler":record["handler"],"depends_on":depends,"input":{"attachment_ids":attachment_ids or [],"request":text},"verification":record["verification"],"requires_user":record["requires_user"],"platform_only":record["platform_only"]})
+            steps.append({"step_id":f"step-{n}","capability_id":record["id"],"handler":record["handler"],"supporting_handlers":record["supporting_handlers"],"depends_on":depends,"input":{"attachment_ids":attachment_ids or [],"request":text},"input_schema":record["input_schema"],"output_schema":record["output_schema"],"verification":record["verification"],"requires_user":record["requires_user"],"platform_only":record["platform_only"],"requires_confirmation":record["requires_confirmation"],"failure_policy":record["failure_policy"]})
         ordered=order_steps(steps)
-        return {"schema_version":"1.0.0","registry_version":registry_version(),"request_type":mode,"selected_capabilities":[r["id"] for r in selected],"excluded_capabilities":[],"steps":ordered,"attachment_ids":attachment_ids or [],"browser_session_id":browser_session_id,"controller":"deepseek","evidence_required":True}
+        return validate_plan({"schema_version":"1.1.0","registry_version":registry_version(),"request_type":mode,"selected_capabilities":[r["id"] for r in selected],"excluded_capabilities":[],"steps":ordered,"attachment_ids":attachment_ids or [],"browser_session_id":browser_session_id,"controller":"deepseek","evidence_required":True})
 
     def relevant_registry(self, request: str, limit: int = 20) -> list[dict[str, Any]]:
         return search_capabilities(request, limit)

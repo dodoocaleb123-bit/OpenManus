@@ -117,6 +117,9 @@ def design_skill_context(limit_per_skill: int = 3500) -> dict[str, str]:
 class SpecialistGateway:
     """Bounded, auditable calls to configured specialist models."""
 
+    _model_semaphore: asyncio.Semaphore | None = None
+    _semaphore_limit: int | None = None
+
     def __init__(self, config: Any, emit: Callable[[str, str, dict], Awaitable[None]] | None = None):
         self.config = config
         self.emit = emit
@@ -127,21 +130,37 @@ class SpecialistGateway:
 
     def llm(self, role: str) -> LLM:
         config_name = ROLES[role].model_config_name
-        if config_name not in self.config.llm:
+        if config_name not in self.config.llm and "default" not in self.config.llm:
             raise RuntimeError(f"Specialist model is not configured: {config_name}")
         return LLM(config_name=config_name)
+
+    @classmethod
+    def _gate(cls) -> asyncio.Semaphore:
+        limit = max(1, min(int(os.environ.get("PLATFORM_MAX_MODEL_CONCURRENCY", "1")), 8))
+        if cls._model_semaphore is None or cls._semaphore_limit != limit:
+            cls._model_semaphore = asyncio.Semaphore(limit)
+            cls._semaphore_limit = limit
+        return cls._model_semaphore
+
+    @staticmethod
+    def _timeout() -> float:
+        try:
+            return max(30.0, float(os.environ.get("PLATFORM_MODEL_TIMEOUT_SECONDS", "600")))
+        except ValueError:
+            return 600.0
 
     async def ask_json(self, role: str, *, instruction: str, context: dict[str, Any] | None = None, max_tokens: int = 1800) -> dict[str, Any]:
         llm = self.llm(role)
         await self._event("specialist.started", f"{role} specialist started", {"role": role, "model": llm.model})
         if role == "designer":
             context = {**(context or {}), "design_skill_resources": design_skill_context()}
-        response = await llm.ask(
-            [{"role": "user", "content": instruction + "\n\nCONTEXT:\n" + json.dumps(context or {}, ensure_ascii=False, default=str)[:30000]}],
-            stream=False,
-            temperature=0.2,
-            max_tokens=max_tokens,
-        )
+        async with self._gate():
+            response = await asyncio.wait_for(llm.ask(
+                [{"role": "user", "content": instruction + "\n\nCONTEXT:\n" + json.dumps(context or {}, ensure_ascii=False, default=str)[:30000]}],
+                stream=False,
+                temperature=0.2,
+                max_tokens=max_tokens,
+            ), timeout=self._timeout())
         parsed = _parse_json(response)
         result = {"role": role, "model": llm.model, "raw_response": _clip(response), **parsed}
         await self._event("specialist.completed", f"{role} specialist completed", {"role": role, "model": llm.model, "result": result})
@@ -150,9 +169,10 @@ class SpecialistGateway:
     async def analyze_images(self, *, prompt: str, image_urls: list[str], context: dict[str, Any] | None = None) -> dict[str, Any]:
         llm = self.llm("vision")
         await self._event("specialist.started", "vision specialist started", {"role": "vision", "model": llm.model, "image_count": len(image_urls)})
-        response = await llm.ask_with_images(
-            [{"role": "user", "content": prompt}], image_urls, stream=False, temperature=0.1,
-        )
+        async with self._gate():
+            response = await asyncio.wait_for(llm.ask_with_images(
+                [{"role": "user", "content": prompt}], image_urls, stream=False, temperature=0.1,
+            ), timeout=self._timeout())
         result = {"role": "vision", "model": llm.model, "raw_response": _clip(response), "analysis": _clip(response), "context": context or {}}
         await self._event("specialist.completed", "vision specialist completed", {"role": "vision", "model": llm.model, "result": result})
         return result

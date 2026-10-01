@@ -1,5 +1,13 @@
 # Multi-model capability update
 
+## Comparison pass / 2026-10-01
+
+- Added explicit input/output schemas and supporting-handler metadata to all 400 capability records.
+- Added typed five-role model profiles and corrected role-aware health reporting.
+- Enforced bounded specialist inference concurrency and model request timeouts.
+- Added a DeepSeek control-unit preflight to direct conversational routing before final model selection.
+- Added the repeatable `scripts/integration_multimodel.py` Docker/Ollama contract check.
+
 ## Unreleased / 2026-10-01
 
 Implemented the roadmap in `OpenManus Multi-Model Capability Update.docx`:
@@ -19,8 +27,8 @@ The supplied capability document contains one extra conversational greeting afte
 
 ## Verification
 
-- Non-Docker platform suite: 173 passed.
-- Focused multi-model/routing suite: 16 passed.
+- Non-Docker platform suite: 176 passed in the latest comparison pass.
+- Focused multi-model/routing suite: 39 passed in the latest comparison pass.
 - Python compilation: passed.
 - Registry completeness: passed.
 - Route smoke checks: passed.

@@ -973,6 +973,25 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 return {"kind": "task", "plan": plan, "user": user_message, "assistant": assistant_message, "task": task}
             user_message = existing_user or await asyncio.to_thread(store.add_chat_message, project_id, "user", text, request_id=request_id)
 
+            bridge_note = ""
+            if "reasoning" in config.llm and reasoning_enabled() and os.getenv("OPENMANUS_DEEPSEEK_BRIDGE", "true").casefold() not in {"0", "false", "off", "no"}:
+                try:
+                    bridge_llm = LLM(config_name="reasoning")
+                    bridge_response = await bridge_llm.ask(
+                        [{"role": "user", "content": (
+                            "You are the OpenManus control unit. Classify this request and state the minimum required path "
+                            "(answer, image analysis, research, design, implementation, user action, or platform operation). "
+                            "Do not answer the user and do not claim execution. Return a concise JSON-or-text routing note.\n\n"
+                            f"REQUEST: {text}\nATTACHMENT_IDS: {list(body.attachment_ids)}"
+                        )}],
+                        stream=False,
+                        temperature=0.0,
+                        max_tokens=700,
+                    )
+                    bridge_note = "\n\nDEEPSEEK CONTROL-UNIT PREFLIGHT (routing guidance only; platform evidence remains authoritative):\n" + strip_think_tags(str(bridge_response))[:6000]
+                except Exception as exc:
+                    bridge_note = f"\n\nDEEPSEEK PREFLIGHT UNAVAILABLE: {str(exc)[:300]}. Continue using the deterministic platform route."
+
             async def save_assistant_reply(content: str, time_to_first_token_ms: int | None = None):
                 return await asyncio.to_thread(
                     store.add_chat_message,
@@ -1070,6 +1089,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 messages[-1]["content"] += "\nReferenced image(s): " + ", ".join(item["filename"] for item in payloads)
                 messages[-1]["base64_images"] = payloads
             workspace_context = await asyncio.to_thread(_workspace_context, Path(project.workspace), text) if code_intent else "No repository context was loaded for this general conversational reply."
+            workspace_context += bridge_note
             project_memory = await asyncio.to_thread(store.get_project_memory, project_id)
             mode_instruction = {
                 "answer": "Answer only. Do not inspect or change project files and do not initiate tools; if the user asks for an action, explain what you would do instead.",

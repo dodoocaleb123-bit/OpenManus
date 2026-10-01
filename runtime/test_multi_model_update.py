@@ -5,9 +5,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.platform.capability_registry import capabilities, get_capability, load_registry
+from app.platform.capability_registry import capabilities, get_capability, load_registry, validate_plan
 from app.platform.control_unit import ControlUnit
 from app.platform.execution_state import ExecutionStateMachine
+from app.platform.model_profiles import profiles
 from app.platform.orchestrator import _is_design_only_task
 from app.platform.handoffs import HandoffRequest, HandoffResult, HandoffStatus, order_steps, validate_result
 from app.server import create_app
@@ -26,6 +27,9 @@ def test_registry_contains_exactly_400_capabilities_and_expected_handlers():
     assert get_capability(166)["handler"] == "deepseek"
     assert get_capability(225)["handler"] == "user"
     assert get_capability(257)["handler"] == "platform"
+    assert all(item["input_schema"]["type"] == "object" for item in records)
+    assert all(item["output_schema"]["type"] == "object" for item in records)
+    assert all("supporting_handlers" in item for item in records)
 
 
 def test_control_unit_selects_ordered_handlers_and_current_attachments():
@@ -38,6 +42,12 @@ def test_control_unit_selects_ordered_handlers_and_current_attachments():
     assert plan["attachment_ids"] == ["upload-current"]
     assert {step["handler"] for step in plan["steps"]} >= {"gemma3", "qwen2.5_3b", "llama3.2_3b", "qwen_coder"}
     assert plan["evidence_required"] is True
+    assert all("input_schema" in step and "output_schema" in step for step in plan["steps"])
+    validate_plan(plan)
+
+
+def test_five_typed_model_profiles_are_present():
+    assert {profile.role for profile in profiles()} == {"qwen_coder", "gemma3", "deepseek", "qwen2.5_3b", "llama3.2_3b"}
 
 
 def test_order_steps_rejects_cycles_and_preserves_dependencies():
