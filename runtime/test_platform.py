@@ -11,7 +11,7 @@ def test_health(tmp_path: Path):
 
 
 def test_project_and_task(tmp_path: Path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[1])
     client = TestClient(create_app(tmp_path))
     client.app.state.orchestrator.start = lambda task: None
     p = client.post('/api/projects', json={'name': 'demo'}).json()

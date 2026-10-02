@@ -52,11 +52,30 @@ def has(type_):
     return lambda events: any(e["type"] == type_ for e in events)
 
 
+def install_fake_deepseek_synthesis(monkeypatch, answer="DeepSeek synthesized the completed workflow."):
+    class FakeDeepSeekSynthesis:
+        model = "deepseek-r1:7b"
+        prompts = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ask(self, messages, system_msgs=None, on_token=None, **kwargs):
+            self.prompts.append(system_msgs[0]["content"] if system_msgs else "")
+            if on_token:
+                await on_token(answer)
+            return answer
+
+    monkeypatch.setattr("app.platform.orchestrator.LLM", FakeDeepSeekSynthesis)
+    return FakeDeepSeekSynthesis
+
+
 @pytest.fixture(autouse=True)
 def fake_deepseek_controller(monkeypatch, request):
     if request.node.name == "test_unconfigured_llm_fails_fast_with_setup_hint":
         return
-    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_deepseek_synthesis(monkeypatch)
 
 
 def test_url_extraction_is_not_used_as_an_intent_classifier():
@@ -286,7 +305,8 @@ def test_agent_question_is_answered_from_the_ui(tmp_path, monkeypatch):
         answer = await agent.channels["ask"]("Which colour scheme?")
         Path(agent.channels["project"].workspace, "choice.txt").write_text(answer)
 
-    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[1])
+    synthesis = install_fake_deepseek_synthesis(monkeypatch)
     client, agents = make_client(tmp_path, script)
     with client:
         p = client.post("/api/projects", json={"name": "q"}).json()
@@ -298,30 +318,21 @@ def test_agent_question_is_answered_from_the_ui(tmp_path, monkeypatch):
         events = wait_for(client, t["id"], has("task.succeeded"))
         task = client.get(f"/api/tasks/{t['id']}").json()
     assert (Path(p["workspace"]) / "choice.txt").read_text() == "dark"
-    assert task["status"] == "succeeded" and task["result"] == "done after 1 run(s)"
-    assert {"agent.thought", "human.reply", "coding.validation"} <= {e["type"] for e in events}
+    assert task["status"] == "succeeded" and task["result"] == "DeepSeek synthesized the completed workflow."
+    assert {"agent.thought", "human.reply", "coding.validation", "assistant.delta"} <= {e["type"] for e in events}
+    assert "dark" in synthesis.prompts[0]
     assert agents[0].closed
     assert "platform_git" not in agents[0].channels["tools"]
 
 
-def test_active_task_conversation_and_handoff_reply_are_both_deepseek_routed(tmp_path, monkeypatch):
+def test_active_task_handoff_reply_is_deepseek_planned_and_delivered_to_the_waiting_agent(tmp_path, monkeypatch):
     calls = install_fake_controller(
         monkeypatch,
         selector=lambda prompt, context: (
-            ("execute", [1]) if "active_workflow" not in context or prompt == "dark" else ("respond", [167])
+            [1] if "active_workflow" not in context or prompt == "dark" else [167]
         ),
     )
-
-    class DirectDeepSeekReply:
-        model = "deepseek-r1:7b"
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def ask(self, messages, system_msgs=None, **kwargs):
-            return "DeepSeek says the agent is waiting for your colour preference."
-
-    monkeypatch.setattr("app.api.routes.LLM", DirectDeepSeekReply)
+    install_fake_deepseek_synthesis(monkeypatch)
 
     async def script(agent, prompt):
         reply = await agent.channels["ask"]("Which colour scheme?")
@@ -333,24 +344,14 @@ def test_active_task_conversation_and_handoff_reply_are_both_deepseek_routed(tmp
         task = client.post("/api/tasks", json={"project_id": project["id"], "prompt": "build it"}).json()
         wait_for(client, task["id"], has("agent.question"))
 
-        conversational = client.post(
-            f"/api/tasks/{task['id']}/messages", json={"message": "  What are you waiting for?  "}
-        )
-        assert conversational.status_code == 200
-        assert conversational.json()["kind"] == "chat"
-        assert conversational.json()["assistant"]["content"].startswith("DeepSeek says")
-        assert client.get(f"/api/tasks/{task['id']}").json()["pending_question"] == "Which colour scheme?"
-
         handoff_reply = client.post(f"/api/tasks/{task['id']}/messages", json={"message": "dark"})
         assert handoff_reply.status_code == 200
         assert handoff_reply.json()["kind"] == "task_continuation"
         assert handoff_reply.json()["delivery"] == "answered"
         wait_for(client, task["id"], has("task.succeeded"))
 
-    assert [entry["prompt"] for entry in calls] == ["build it", "  What are you waiting for?  ", "dark"]
+    assert [entry["prompt"] for entry in calls] == ["build it", "dark"]
     assert (Path(project["workspace"]) / "choice.txt").read_text() == "dark"
-    messages = client.get(f"/api/projects/{project['id']}/chat").json()
-    assert any(item["content"] == "DeepSeek says the agent is waiting for your colour preference." for item in messages)
 
 
 def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path, monkeypatch):
@@ -367,10 +368,10 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
 
     def selector(prompt, context):
         if context.get("active_workflow") and prompt == "request a new unselected step":
-            return "execute", [5]
-        return "execute", [1, 231, 3]
+            return [5]
+        return [1, 231, 3]
 
-    install_fake_controller(monkeypatch, capability_ids=[1, 231, 3], route="execute", selector=selector)
+    install_fake_controller(monkeypatch, capability_ids=[1, 231, 3], selector=selector)
     run_prompts = []
 
     async def script(agent, prompt):
@@ -415,7 +416,7 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
 def test_malformed_design_specialist_result_cannot_complete_capability(tmp_path, monkeypatch):
     from app.platform.specialists import SpecialistGateway
 
-    install_fake_controller(monkeypatch, capability_ids=[135], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[135])
 
     async def malformed(self, role, *, instruction, context=None, max_tokens=1800):
         return {"role": role, "parse_error": "specialist returned malformed JSON"}
@@ -440,7 +441,8 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
     from PIL import Image
     from app.platform.specialists import SpecialistGateway
 
-    install_fake_controller(monkeypatch, capability_ids=[131, 135, 1], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[131, 147, 135, 1])
+    synthesis = install_fake_deepseek_synthesis(monkeypatch, "DeepSeek combined the research, image, design, and build results.")
     monkeypatch.setattr("app.platform.orchestrator.reasoning_enabled", lambda: False)
     observed = {}
 
@@ -449,6 +451,10 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
         return {"analysis": "Wide sidebar and compact navigation", "model": "gemma3:4b"}
 
     async def design(self, role, *, instruction, context=None, max_tokens=1800):
+        if "Plan a source search" in instruction:
+            return {"search_queries": ["dashboard design patterns"], "research_focus": "dashboard patterns"}
+        if "source-grounded research specialist" in instruction:
+            return {"summary": "Research completed", "findings": ["Retrieved source fact"], "sources": ["https://research.example/"], "open_questions": [], "confidence": "high"}
         if "Review the completed implementation" in instruction:
             return {"passed": True}
         observed["design_context"] = context
@@ -456,6 +462,19 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
 
     monkeypatch.setattr(SpecialistGateway, "analyze_images", vision)
     monkeypatch.setattr(SpecialistGateway, "ask_json", design)
+
+    from types import SimpleNamespace
+
+    async def search(self, **kwargs):
+        return SimpleNamespace(results=[SimpleNamespace(
+            url="https://research.example/",
+            title="Dashboard patterns",
+            description="A local deterministic test source.",
+            raw_content="Retrieved source fact",
+            source="test",
+        )])
+
+    monkeypatch.setattr("app.tool.web_search.WebSearch.execute", search)
 
     async def build(agent, prompt):
         observed["coder_prompt"] = prompt
@@ -473,7 +492,7 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
         ).json()
         launched = client.post(
             f"/api/projects/{project['id']}/chat",
-            json={"message": "Build a design based on this screenshot", "attachment_ids": [upload["id"]]},
+            json={"message": "Research dashboard patterns and build a design based on this screenshot", "attachment_ids": [upload["id"]]},
         )
         assert launched.status_code == 200 and launched.json()["kind"] == "task"
         task_id = launched.json()["task"]["id"]
@@ -483,6 +502,9 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
     assert task["status"] == "succeeded"
     assert observed["design_context"]["visual_reference"]["analysis"] == "Wide sidebar and compact navigation"
     assert "Compact information-dense navigation" in observed["coder_prompt"]
+    assert "Retrieved source fact" in synthesis.prompts[0]
+    assert "Wide sidebar and compact navigation" in synthesis.prompts[0]
+    assert "Compact information-dense navigation" in synthesis.prompts[0]
     assert len(agents) == 1
 
 
@@ -494,7 +516,7 @@ def test_selected_git_push_fails_without_platform_action_evidence(tmp_path, monk
     assert not _verified_git_action(83, [{"tool": "platform_git", "ok": True, "evidence": {"action": "commit"}}])
     assert _verified_git_action(83, [{"tool": "platform_git", "ok": True, "evidence": {"action": "push"}}])
 
-    install_fake_controller(monkeypatch, capability_ids=[83], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[83])
 
     async def unrelated(agent, prompt):
         Path(agent.channels["project"].workspace, "unrelated.txt").write_text("unrelated")
@@ -518,7 +540,7 @@ def test_selected_git_push_fails_without_platform_action_evidence(tmp_path, monk
 
 
 def test_selected_git_push_handoff_records_matching_tool_provenance(tmp_path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[83], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[83])
 
     async def proven(agent, prompt):
         await agent.channels["emit"]("agent.tool_result", "platform_git done", {

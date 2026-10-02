@@ -71,7 +71,7 @@ def test_user_handoff_respects_deepseek_selected_order_around_coding():
     assert after_by_id[231]["step_id"] not in after_by_id[1]["depends_on"]
 
 
-def test_scheduled_prompt_is_deepseek_routed_before_answer_or_execution(tmp_path, monkeypatch):
+def test_every_scheduled_prompt_becomes_a_deepseek_planned_task(tmp_path, monkeypatch):
     from app.platform.control_unit import ControlUnit
 
     monkeypatch.setitem(config.llm, "reasoning", config.llm["default"])
@@ -80,23 +80,12 @@ def test_scheduled_prompt_is_deepseek_routed_before_answer_or_execution(tmp_path
 
     async def fake_plan(llm, *, prompt, attachment_ids=None, browser_session_id=None, context=None):
         seen.append((prompt, context))
-        route = "respond" if prompt == "just explain this" else "execute"
-        ids = [167] if route == "respond" else [1]
+        ids = [1] if prompt == "run the selected work" else [167]
         plan = ControlUnit().plan_from_capability_ids(prompt, ids)
-        plan.update(route=route, needs_workspace_context=False, summary="Selected by fake DeepSeek", deepseek={"model": "deepseek-test", "intent": "test"})
+        plan.update(authoritative=True, needs_workspace_context=False, summary="Selected by fake DeepSeek", deepseek={"model": "deepseek-test", "intent": "test"})
         return plan
 
-    class FakeLLM:
-        model = "deepseek-test"
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def ask(self, messages, **kwargs):
-            return "DeepSeek scheduled answer."
-
     monkeypatch.setattr("app.server.make_authoritative_plan", fake_plan)
-    monkeypatch.setattr("app.server.LLM", FakeLLM)
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = client.post("/api/projects", json={"name": "scheduled"}).json()
     started = []
@@ -105,13 +94,13 @@ def test_scheduled_prompt_is_deepseek_routed_before_answer_or_execution(tmp_path
     import asyncio
 
     direct = asyncio.run(client.app.state.scheduler.launch(project["id"], "just explain this"))
-    assert direct["kind"] == "chat"
-    assert direct["assistant"].content == "DeepSeek scheduled answer."
-    assert direct["assistant"].response_time_ms is not None
+    assert direct.plan["planner"] == "deepseek"
+    assert "route" not in direct.plan
+    assert direct.prompt == "just explain this"
     created = asyncio.run(client.app.state.scheduler.launch(project["id"], "run the selected work"))
     assert created.plan["control_unit_plan"]["authoritative"] is True
-    assert created.plan["route"] == "execute"
-    assert started == [created]
+    assert "route" not in created.plan
+    assert started == [direct, created]
     assert [entry[0] for entry in seen] == ["just explain this", "run the selected work"]
 
 
@@ -140,7 +129,7 @@ def test_preview_command_detection_and_override(tmp_path: Path):
 
 
 def test_phase_c_routes_and_process_manager(tmp_path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[1], route="execute")
+    install_fake_controller(monkeypatch, capability_ids=[1])
     client = TestClient(create_app(tmp_path, check_llm=False))
     client.app.state.orchestrator.start = lambda task: None
     project = client.post("/api/projects", json={"name": "phase-c"}).json()

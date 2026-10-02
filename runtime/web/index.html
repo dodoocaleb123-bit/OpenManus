@@ -323,58 +323,14 @@ function clearReplyDraft(which){const draft=which==='task'?taskReplyDraft:chatRe
 function clearChatReplyState(){clearChatLoading();clearReplyDraft('chat')}
 function setSendBusy(busy){const button=$('runBtn');if(!button)return;button.classList.toggle('busy',!!busy);button.setAttribute('aria-label',busy?'Stop current task':'Send message');button.title=busy?'Stop current task':'Send message';button.disabled=!busy&&!selected}
 function abortChatStream(){if(!chatAbortController)return;chatStopRequested=true;clearChatReplyState();chatAbortController.abort()}
-async function postChatWithStream(url,opts={}){
- let lastError=null;
- for(let attempt=0;attempt<3;attempt++){
-  try{return await postChatWithStreamAttempt(url,opts)}catch(error){
-   lastError=error;
-   if(chatStopRequested||attempt>=2)break;
-   clearReplyDraft('chat');showChatLoading();
-   await new Promise(resolve=>setTimeout(resolve,350*Math.pow(2,attempt)));
-  }
- }
- if(chatStopRequested)throw lastError||Error('The response was stopped.');
+async function postChatTask(url,opts={}){
+ chatAbortController=new AbortController();
  try{
-  const fallback={...opts,headers:{Accept:'application/json',...(opts.headers||{})}};
-  return await jsonApi(url,fallback);
- }catch(error){throw lastError||error||Error('The response could not be completed.');}
+  const request={...opts,headers:{Accept:'application/json',...(opts.headers||{})},signal:chatAbortController.signal};
+  return await jsonApi(url,request);
+ }finally{chatAbortController=null}
 }
-async function postChatWithStreamAttempt(url,opts={}){
- const request={...opts,headers:{Accept:'text/event-stream, application/json',...(opts.headers||{})}};
- chatAbortController=new AbortController();request.signal=chatAbortController.signal;
- if(request.body&&typeof request.body!=='string')request.body=JSON.stringify(request.body);
- if(request.body)request.headers['Content-Type']='application/json';
- const response=await fetch(url,request);
- const contentType=response.headers.get('content-type')||'';
- if(!response.ok){const data=await response.json().catch(()=>({}));const detail=Array.isArray(data.detail)?data.detail.map(x=>x.msg).join('; '):data.detail;throw Error(detail||`Request failed (${response.status})`)}
- if(!contentType.includes('text/event-stream'))return response.json();
- let finalAssistant=null,streamError=null,buffer='',eventName='message',dataLines=[];
- const dispatch=frame=>{
-  for(const line of frame.split(/\r?\n/)){if(line.startsWith(':'))continue;if(line.startsWith('event:'))eventName=line.slice(6).trim();else if(line.startsWith('data:'))dataLines.push(line.slice(5).trimStart())}
-  if(!dataLines.length){eventName='message';return}
-  let data={};try{data=JSON.parse(dataLines.join('\n'))}catch(e){}
-  if(eventName==='delta')appendReplyDraft('chat',data.delta||'');
-  else if(eventName==='reset')clearReplyDraft('chat');
-  else if(eventName==='complete'){finalAssistant=data.assistant||null;clearChatReplyState()}
-  else if(eventName==='error'){streamError=Error(data.message||'The model stream failed.');clearChatReplyState()}
-  eventName='message';dataLines=[];
- };
- const reader=response.body.getReader(),decoder=new TextDecoder();
- try{
-  while(true){
-   const {value,done}=await reader.read();
-   buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
-   let boundary;
-   while((boundary=buffer.search(/\r?\n\r?\n/))>=0){const frame=buffer.slice(0,boundary);const separator=buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];buffer=buffer.slice(boundary+separator.length);dispatch(frame)}
-   if(done)break;
-  }
- }catch(error){clearChatReplyState();throw Error('The response stream was interrupted; retrying the same request.');}
- if(buffer.trim())dispatch(buffer);
- if(streamError)throw streamError;
- if(!finalAssistant){clearChatReplyState();throw Error('The response stream ended before OpenManus finished the reply.');}
- return {kind:'chat',assistant:finalAssistant};
-}
-const jsonApi=api;api=async function(url,opts={}){if(opts.method==='POST'&&/^\/api\/projects\/[^/]+\/chat$/.test(url))return postChatWithStream(url,opts);return jsonApi(url,opts)};
+const jsonApi=api;api=async function(url,opts={}){if(opts.method==='POST'&&/^\/api\/projects\/[^/]+\/chat$/.test(url))return postChatTask(url,opts);return jsonApi(url,opts)};
 
 /* ---------------- status ---------------- */
 async function loadStatus(){try{const s=await api('/api/status');const m=$('pillModel');if(s.llm.configured){const keys=s.llm.api_key_count>1?` · ${s.llm.api_key_count} keys`:'';const fallback=s.llm.fallback_configured?` · fallback: ${s.llm.fallback_model}`:'';m.textContent=`model: ${s.llm.model}${s.llm.supports_images?' · vision':''}${keys}${fallback}`;m.className='pill ok'}else{m.textContent='model: not configured';m.className='pill bad';const b=$('setup');b.style.display='block';b.textContent='⚠ '+s.llm.problem}
@@ -524,12 +480,12 @@ async function confirmCancelTask(){if(!currentTask||!['running','queued'].includ
 async function submitPrompt(){
  const button=$('runBtn');if(button.classList.contains('busy')){if(currentTask&&['running','queued'].includes(currentTask.status))requestCancelTask();else abortChatStream();return}if(!selected)return;const text=$('prompt').value;if(!text.trim())return;
  if(currentTask&&['running','queued'].includes(currentTask.status)){
-  renderChatMessage({role:'user',content:text});$('prompt').value='';try{const routed=await api(`/api/tasks/${currentTask.id}/messages`,{method:'POST',body:{message:text}});if(routed.kind==='chat'){renderChatMessage(routed.assistant)}else{showQuestion(null);clearChoices()}}catch(e){$('feed').append(el('div','ev bad',e.message))}return
+  renderChatMessage({role:'user',content:text});$('prompt').value='';try{await api(`/api/tasks/${currentTask.id}/messages`,{method:'POST',body:{message:text}});showQuestion(null);clearChoices()}catch(e){$('feed').append(el('div','ev bad',e.message))}return
  }
  setSendBusy(true);const attachmentIds=[...new Set(pendingUploadIds)].slice(-4);pendingUploadIds.splice(0);renderAttachments();renderChatMessage({role:'user',content:text+(attachmentIds.length?'\n📎 attachment(s) included':'')});showChatLoading();$('prompt').value='';historyView=false;selectedTaskId=null;updateTaskHeader(null,false);
  if(!pendingIdempotency||pendingIdempotency.prompt!==text||pendingIdempotency.projectId!==selected.id){const key=window.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;pendingIdempotency={prompt:text,projectId:selected.id,key}}
  responseStartedAt=performance.now();
- try{const result=await api(`/api/projects/${selected.id}/chat`,{method:'POST',headers:{'Idempotency-Key':pendingIdempotency.key},body:{message:text,attachment_ids:attachmentIds,browser_session_id:browserSession?.id||null}});pendingIdempotency=null;clearChatReplyState();if(result.plan?.route==='execute')renderPlan(result.plan);renderChatMessage(result.assistant);if(result.kind==='task'){resetProcessing();currentTask=result.task;selectedTaskId=result.task.id;updateTaskHeader(result.task,false);lastEventId=null;setRunning(true,result.task.started_at);openStream(result.task.id);refreshHistory()}else{$('feed').scrollTop=$('feed').scrollHeight}}
+ try{const result=await api(`/api/projects/${selected.id}/chat`,{method:'POST',headers:{'Idempotency-Key':pendingIdempotency.key},body:{message:text,attachment_ids:attachmentIds,browser_session_id:browserSession?.id||null}});pendingIdempotency=null;clearChatReplyState();renderPlan(result.plan);if(!result.task)throw new Error('OpenManus did not return a task workflow.');resetProcessing();currentTask=result.task;selectedTaskId=result.task.id;updateTaskHeader(result.task,false);lastEventId=null;setRunning(true,result.task.started_at);openStream(result.task.id);refreshHistory()}
  catch(e){clearChatReplyState();if(!chatStopRequested)$('feed').append(el('div','ev bad',e.message));clearReplyDraft('chat')}finally{chatAbortController=null;chatStopRequested=false;setSendBusy(Boolean(currentTask&&['running','queued'].includes(currentTask.status)))}
 }
 async function cancelTask(){requestCancelTask()}

@@ -14,24 +14,27 @@ including display equations, fractions, aligned systems, superscripts, and
 common AMS constructs. MathJax is loaded by the web client; if the CDN is
 unavailable, the original formula text remains visible as a fallback.
 
-Each project has one persistent conversation composer and no task/conversation
-mode selector. Every new message is sent to DeepSeek first, unchanged; DeepSeek
-chooses a direct response or an ordered, registry-validated capability workflow.
-Simple conversation goes through a compact DeepSeek control decision; the long
-executable-capability directory is sent only when DeepSeek decides specialist
-work is needed. This avoids overwhelming local DeepSeek with a full catalog
-for greetings or ordinary questions. On local Ollama, the control decision
-requests JSON mode and will retry once with a larger output budget if the
-model returns only reasoning or malformed JSON. Both attempts use DeepSeek,
-never a keyword classifier or substitute model.
-For a direct reply, DeepSeek's `respond` decision is sufficient: a numeric
-capability ID is not required. The platform records the generic conversation
-capability as bookkeeping and grants no tools on this route.
-Only when DeepSeek asks for workspace context does the server add bounded local
-file excerpts. Secret-like filenames, generated directories, and oversized
-content are excluded. A per-project Memory pane stores up to 6,000 characters
-in local SQLite; credentials are rejected and both memory and files are treated
-as untrusted reference data, not instructions.
+Each project has one persistent composer; there is no conversation/task or
+answer/build mode selector. Every accepted message is passed unchanged to
+DeepSeek, which selects the required model handlers and then the exact ordered
+capability IDs. Every accepted message becomes a persisted task workflow,
+including greetings and ordinary questions. Answering is a DeepSeek capability
+within that workflow, not a separate response route; multi-step requests can
+combine research, vision, design, coding, user actions, and a final DeepSeek
+synthesis.
+
+The control unit first identifies the necessary handler roles, then DeepSeek
+selects from the executable capability directory for those roles. The platform
+validates IDs, dependencies, model availability, authorization, and evidence
+requirements after the model's decision; these checks do not classify the
+request. On local Ollama, JSON mode is requested and DeepSeek retries once with
+a larger output budget if the response is only reasoning or malformed JSON.
+There is no keyword classifier or substitute model. Only when DeepSeek asks
+for workspace context does the server add bounded local file excerpts.
+Secret-like filenames, generated directories, and oversized content are
+excluded. A per-project Memory pane stores up to 6,000 characters in local
+SQLite; credentials are rejected and both memory and files are treated as
+untrusted reference data, not instructions.
 
 The paperclip button is in the lower-left of the composer. Selected uploads
 appear as attachment chips and are included in the same DeepSeek-first message.
@@ -186,34 +189,31 @@ call to the default coder. Passing this probe is **not** the complete ZIP
 acceptance test: the multi-step build, screenshot, preview, GitHub and restart
 scenario must also pass on the laptop before calling the whole update complete.
 
-**DeepSeek is the mandatory control unit for every new user message.** It
-receives the message before any answer/task branch, chooses either a direct
-response or a validated capability workflow, and selects the capability IDs
-and handlers. **Qwen Coder** executes selected software, terminal, preview, and
-GitHub work; **Gemma 3** analyzes selected image/screenshot work; **Qwen2.5 3B**
-conducts selected source-grounded web research; and **Llama 3.2 3B** supplies
-selected creative direction. The platform validates DeepSeek's plan against
-the local capability/model registry and executes the selected handlers. The
-registry also inventories UI/platform features and known limits, but those are
-not offered as executable task steps; the planner sees only direct-answer,
-model-backed, and supported user-handoff capabilities. DeepSeek's selected order
-is retained, so a user step can block coding or pause after a verified build.
-Scheduled prompts are routed through the same DeepSeek controller. It
-does not use a keyword classifier or an automatic fallback route; if DeepSeek
-is unavailable or returns an invalid plan, the request fails visibly without
-being reclassified by another layer. Named roles are pinned to their configured
-endpoint so a failed DeepSeek, research, or design model cannot silently become
-the default or a cloud model.
+**DeepSeek is the mandatory control unit for every new user message**, whether
+it arrives through the project composer, the task API, or a scheduled prompt.
+It receives the message before any task workflow is created and selects model
+handlers and ordered capabilities. **Qwen Coder** executes selected software,
+terminal, preview, and GitHub work; **Gemma 3** analyzes selected image/screenshot
+work; **Qwen2.5 3B** conducts selected source-grounded web research; and
+**Llama 3.2 3B** supplies selected creative direction. DeepSeek's selected
+user-facing output capability depends on earlier specialist results, so build
+and research requests can finish with a synthesized explanation. The platform
+validates DeepSeek's plan against the local capability/model registry and
+executes the selected handlers. The registry also inventories UI/platform
+features and known limits; only capabilities with supported adapters are
+offered for execution. A selected user action pauses the workflow and resumes
+after a reply. If DeepSeek is unavailable or returns an invalid plan, the request
+fails visibly; it is not reclassified by another layer. Named roles are pinned
+to their configured local endpoint so a failed specialist cannot silently
+become the default or a cloud model.
 
-Chat has no answer/inspect/plan/build selector. Messages sent while a task is
-running also go through DeepSeek first: it decides whether the message is a
-conversational reply or compatible guidance for the active workflow. Compatible
-guidance resumes the task; a request needing handlers outside the active plan is
-rejected with a retry-after-completion message rather than being silently
-misrouted. Explicit UI controls such as Stop and confirmation dialogs remain
-platform actions. The platform—not the model—retains authorization and
-confirmation gates for login, payments, destructive actions, browser takeover,
-publishing, and pushes.
+Messages sent to an active task are also planned by DeepSeek. In the current
+implementation, such a follow-up can continue only through capability steps
+already selected for that active task; a genuinely new capability workflow is
+rejected until the current task ends. Explicit UI controls such as Stop and
+confirmation dialogs remain platform actions. The platform—not the model—retains
+authorization and confirmation gates for login, payments, destructive actions,
+browser takeover, publishing, and pushes.
 
 ## Tests
 

@@ -94,7 +94,7 @@ async def test_ask_ollama_json_response_without_usage_metadata():
         async def create(self, **kwargs):
             self.kwargs = kwargs
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content='{"route":"respond"}'), finish_reason="stop")],
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"capability_ids":[167]}'), finish_reason="stop")],
                 usage=None,
             )
 
@@ -120,7 +120,7 @@ async def test_ask_ollama_json_response_without_usage_metadata():
         stream=False,
         response_format={"type": "json_object"},
     )
-    assert result == '{"route":"respond"}'
+    assert result == '{"capability_ids":[167]}'
     assert completion.kwargs["response_format"] == {"type": "json_object"}
     assert recorded == [(5, len(result))]
 

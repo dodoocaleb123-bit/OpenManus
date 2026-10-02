@@ -14,8 +14,9 @@ This build extends the OpenManus runtime with a product/platform layer for auton
 - Task attempts/checkpoints.
 - Persistent event history and SSE streaming.
 - Task resume endpoint and task-history UI.
-- Persistent project chat mode alongside autonomous Build mode.
-- Gemini/OpenAI-compatible conversational API with SQLite chat history.
+- One project composer: every accepted user message goes to the local DeepSeek control unit and becomes a tracked task workflow.
+- Capability-based specialist handoffs for research, vision, design, coding, user actions, and final DeepSeek synthesis.
+- SQLite chat history, task state, capability plans, evidence, and SSE progress streaming.
 
 ## Run
 
@@ -38,6 +39,10 @@ The platform ships as a single Docker image (`runtime/Dockerfile`) with a Render
 Web UI
   ↓
 FastAPI Platform API
+  ↓
+DeepSeek Control Unit (local Ollama)
+  ↓
+Validated capability workflow and specialist handoffs
   ↓
 Durable Project/Task/Event Store (SQLite)
   ↓

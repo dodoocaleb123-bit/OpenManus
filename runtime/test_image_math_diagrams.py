@@ -24,7 +24,10 @@ def test_web_client_contains_mermaid_renderer_and_image_budget_controls():
     assert "send-glyph" in html
     assert "composer-submit.busy" in html
     assert "Stop current task" in html
-    assert "jsonApi(url,fallback)" in html
+    assert "async function postChatTask" in html
+    assert "return await jsonApi(url,request)" in html
+    assert "new EventSource(`/api/tasks/${id}/events" in html
+    assert "kind:'chat'" not in html
     routes = Path("app/api/routes.py").read_text(encoding="utf-8")
     assert "PLATFORM_IMAGE_MAX_TOKENS" in routes
     assert "image_answer_needs_completion" not in routes

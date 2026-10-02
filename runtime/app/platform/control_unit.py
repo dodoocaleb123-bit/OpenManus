@@ -48,5 +48,12 @@ class ControlUnit:
                     step_for[item] for item in prior
                     if get_capability(item)["handler"] in {"qwen_coder", "qwen2.5_3b", "llama3.2_3b", "gemma3"}
                 )
+            elif record["handler"] == "deepseek" and cid in set(range(167, 174)):
+                # DeepSeek's user-facing answer is part of the same workflow,
+                # and must be based on every selected execution/handoff result.
+                dependencies.extend(
+                    step_for[item] for item in selected
+                    if get_capability(item)["handler"] not in {"deepseek", "platform"}
+                )
             steps.append({"step_id": step_for[cid], "capability_id": cid, "handler": record["handler"], "supporting_handlers": record["supporting_handlers"], "tools": record["tools"], "depends_on": list(dict.fromkeys(dependencies)), "input": {"user_request": request, "attachment_ids": attachment_ids or [], "dependency_outputs": {}}, "input_schema": record["input_schema"], "output_schema": record["output_schema"], "verification": record["verification"], "requires_user": record["requires_user"], "platform_only": record["platform_only"], "requires_confirmation": record["requires_confirmation"], "failure_policy": record["failure_policy"]})
         return validate_plan({"schema_version": "1.2.0", "registry_version": registry_version(), "request_type": "deepseek_selected_workflow", "selected_capabilities": selected, "excluded_capabilities": sorted(excluded), "steps": order_steps(steps), "attachment_ids": attachment_ids or [], "browser_session_id": browser_session_id, "controller": controller, "planner_status": planner_status, "authoritative": controller == "deepseek" and planner_status == "authoritative", "evidence_required": True})

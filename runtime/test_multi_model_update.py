@@ -48,6 +48,19 @@ def test_control_unit_selects_ordered_handlers_and_current_attachments():
     validate_plan(plan)
 
 
+def test_research_build_workflow_feeds_all_specialist_results_to_final_deepseek_step():
+    plan = ControlUnit().plan_from_capability_ids(
+        "Research the implementation, build it, and explain the result",
+        [147, 135, 1, 168],
+    )
+    by_id = {step["capability_id"]: step for step in plan["steps"]}
+    final_answer = by_id[168]
+    dependencies = set(final_answer["depends_on"])
+    assert {by_id[147]["step_id"], by_id[135]["step_id"], by_id[1]["step_id"]}.issubset(dependencies)
+    positions = {step["step_id"]: index for index, step in enumerate(plan["steps"])}
+    assert all(positions[dependency] < positions[final_answer["step_id"]] for dependency in dependencies)
+
+
 def test_five_typed_model_profiles_are_present():
     assert {profile.role for profile in profiles()} == {"qwen_coder", "gemma3", "deepseek", "qwen2.5_3b", "llama3.2_3b"}
 
@@ -93,8 +106,8 @@ async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
             FakeDeepSeek.last_messages = messages
             FakeDeepSeek.last_system = system_msgs
             if "Executable capability directory" not in system_msgs[0]["content"]:
-                return '{"route":"execute","needs_workspace_context":true,"summary":"research and build","intent":"engineering","capability_ids":[],"handlers":["qwen2.5_3b","llama3.2_3b","qwen_coder"],"rationale":[]}'
-            return '{"route":"execute","needs_workspace_context":true,"summary":"research and build","intent":"engineering","capability_ids":[147,135,1],"excluded_capabilities":[],"requires_confirmation":false,"rationale":["source evidence before implementation"]}'
+                return '{"needs_workspace_context":true,"summary":"research and build","intent":"engineering","handlers":["deepseek","qwen2.5_3b","llama3.2_3b","qwen_coder"],"rationale":[]}'
+            return '{"summary":"research and build","intent":"engineering","capability_ids":[147,135,1,168],"excluded_capabilities":[],"requires_confirmation":false,"rationale":["source evidence before implementation"]}'
 
     raw_prompt = "  Research this URL, design and build the result  "
     plan = await make_authoritative_plan(FakeDeepSeek(), prompt=raw_prompt)
@@ -102,6 +115,7 @@ async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
     assert plan["controller"] == "deepseek"
     assert [step["handler"] for step in plan["steps"]][:2] == ["deepseek", "qwen2.5_3b"]
     assert any(step["handler"] == "llama3.2_3b" for step in plan["steps"])
+    assert any(step["capability_id"] == 168 and step["handler"] == "deepseek" for step in plan["steps"])
     assert FakeDeepSeek.last_messages == [{"role": "user", "content": raw_prompt}]
     offered = FakeDeepSeek.last_system[0]["content"]
     assert "257\tplatform" not in offered
@@ -110,7 +124,7 @@ async def test_deepseek_authoritative_plan_selects_and_validates_registry_ids():
 
 
 @pytest.mark.asyncio
-async def test_greeting_routes_through_deepseek_without_full_catalog_and_recovers_think_only_reply():
+async def test_greeting_uses_deepseek_handler_then_selects_output_capability_after_think_only_retry():
     class FakeDeepSeek:
         model = "deepseek-r1:7b"
         base_url = "http://host.docker.internal:11434/v1"
@@ -122,15 +136,16 @@ async def test_greeting_routes_through_deepseek_without_full_catalog_and_recover
             self.calls.append((messages, system_msgs, kwargs))
             if len(self.calls) == 1:
                 return "<think>working through a greeting</think>"
-            return '{"route":"respond","needs_workspace_context":false,"summary":"Greet the user","intent":"conversation","capability_ids":[166],"handlers":[],"rationale":[]}'
+            if "Executable capability directory" not in system_msgs[0]["content"]:
+                return '{"summary":"Greet the user","intent":"greeting","needs_workspace_context":false,"handlers":["deepseek"],"rationale":[]}'
+            return '{"summary":"Greet the user","intent":"greeting","capability_ids":[167],"excluded_capabilities":[],"requires_confirmation":false,"rationale":[]}'
 
     llm = FakeDeepSeek()
     plan = await make_authoritative_plan(llm, prompt="Hellooo")
-    assert plan["route"] == "respond"
-    assert plan["selected_capabilities"] == [166]
-    assert len(llm.calls) == 2
+    assert plan["selected_capabilities"] == [167]
+    assert len(llm.calls) == 3
     assert all(messages == [{"role": "user", "content": "Hellooo"}] for messages, _, _ in llm.calls)
-    assert all("Executable capability directory" not in system[0]["content"] for _, system, _ in llm.calls)
+    assert all("Executable capability directory" not in system[0]["content"] for _, system, _ in llm.calls[:2])
     assert all(kwargs["response_format"] == {"type": "json_object"} for _, _, kwargs in llm.calls)
     assert llm.calls[1][2]["max_tokens"] >= 4096
 
@@ -146,38 +161,40 @@ async def test_old_ollama_json_mode_rejection_retries_same_deepseek_model():
 
         async def ask(self, messages, **kwargs):
             self.calls.append(kwargs)
-            if kwargs.get("response_format"):
+            if kwargs.get("response_format") and len(self.calls) == 1:
                 raise BadRequestError(
                     "unknown response_format",
                     response=httpx.Response(400, request=httpx.Request("POST", self.base_url + "/chat/completions")),
                     body={},
                 )
-            return '{"route":"respond","needs_workspace_context":false,"summary":"Greet the user","intent":"conversation","capability_ids":[166],"handlers":[]}'
+            if "Executable capability directory" not in (kwargs.get("system_msgs") or [{}])[0].get("content", ""):
+                return '{"summary":"Greet the user","intent":"greeting","needs_workspace_context":false,"handlers":["deepseek"]}'
+            return '{"summary":"Greet the user","intent":"greeting","capability_ids":[167],"excluded_capabilities":[],"requires_confirmation":false}'
 
     llm = FakeDeepSeek()
     plan = await make_authoritative_plan(llm, prompt="Hello")
-    assert plan["route"] == "respond"
-    assert [call["response_format"] for call in llm.calls] == [{"type": "json_object"}, None]
+    assert plan["selected_capabilities"] == [167]
+    assert [call["response_format"] for call in llm.calls] == [{"type": "json_object"}, None, {"type": "json_object"}]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decision", [
-    '{"route":"respond"}',
-    '{"route":"respond","needs_workspace_context":false,"summary":"Hello","capability_ids":[]}',
-    '{"route":"respond","needs_workspace_context":false,"summary":"Hello","capability_ids":[1]}',
-    '{"route":"respond","needs_workspace_context":false,"summary":"Hello","capability_ids":["167"]}',
+    '{"needs_workspace_context":false,"summary":"Hello","handlers":["deepseek"]}',
+    '{"summary":"Hello","capability_ids":[]}',
+    '{"summary":"Hello","capability_ids":[1]}',
+    '{"summary":"Hello","capability_ids":["167"]}',
 ])
-async def test_deepseek_direct_reply_does_not_require_a_numeric_capability_id(decision):
+async def test_deepseek_requires_an_explicit_valid_output_capability(decision):
     class FakeDeepSeek:
         model = "deepseek-r1:7b"
 
-        async def ask(self, messages, **kwargs):
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            if "Executable capability directory" not in system_msgs[0]["content"]:
+                return '{"summary":"Answer the user","intent":"answer","needs_workspace_context":false,"handlers":["deepseek"]}'
             return decision
 
-    plan = await make_authoritative_plan(FakeDeepSeek(), prompt="Hellooo")
-    assert plan["route"] == "respond"
-    assert plan["selected_capabilities"] == [166]
-    assert {step["handler"] for step in plan["steps"]} == {"deepseek"}
+    with pytest.raises(ValueError, match="capability IDs|output capability"):
+        await make_authoritative_plan(FakeDeepSeek(), prompt="Hellooo")
 
 
 @pytest.mark.asyncio
@@ -187,10 +204,10 @@ async def test_deepseek_cannot_select_an_unimplemented_platform_capability_as_wo
 
         async def ask(self, messages, system_msgs=None, **kwargs):
             if "Executable capability directory" not in system_msgs[0]["content"]:
-                return '{"route":"execute","needs_workspace_context":false,"summary":"delete project","intent":"project operation","capability_ids":[],"handlers":["qwen_coder"],"rationale":[]}'
-            return '{"route":"execute","needs_workspace_context":false,"summary":"delete project","intent":"project operation","capability_ids":[179],"excluded_capabilities":[],"requires_confirmation":true,"rationale":[]}'
+                return '{"summary":"delete project","intent":"project operation","needs_workspace_context":false,"handlers":["deepseek","qwen_coder"],"rationale":[]}'
+            return '{"summary":"delete project","intent":"project operation","capability_ids":[179],"excluded_capabilities":[],"requires_confirmation":true,"rationale":[]}'
 
-    with pytest.raises(ValueError, match="capability outside its chosen handler directory"):
+    with pytest.raises(ValueError, match="capability IDs from its selected handler directory"):
         await make_authoritative_plan(FakeDeepSeek(), prompt="Delete the project")
 
 
