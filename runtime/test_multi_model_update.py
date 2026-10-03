@@ -168,6 +168,28 @@ async def test_same_model_retries_when_local_ollama_rejects_json_mode():
     assert [call["response_format"] for call in llm.calls] == [{"type": "json_object"}, None]
 
 
+@pytest.mark.asyncio
+async def test_deepseek_repairs_valid_json_with_empty_workflow_summary():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+        base_url = "http://host.docker.internal:11434/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            self.calls.append((messages, system_msgs, kwargs))
+            if len(self.calls) == 1:
+                return '{"summary":"","intent":"greeting","needs_workspace_context":false,"workflow":[]}'
+            return '{"summary":"Greet the user","intent":"greeting","needs_workspace_context":false,"workflow":[]}'
+
+    llm = FakeDeepSeek()
+    plan = await make_authoritative_plan(llm, prompt="Hello")
+    assert plan["summary"] == "Greet the user"
+    assert len(llm.calls) == 2
+    assert "summary" in llm.calls[1][0][0]["content"]
+
+
 def test_model_status_remains_but_numbered_task_registry_endpoint_is_removed(tmp_path: Path):
     app = create_app(tmp_path, check_llm=False)
     with TestClient(app) as client:

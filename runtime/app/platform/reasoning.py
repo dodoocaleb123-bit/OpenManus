@@ -43,7 +43,13 @@ def _parse_json(text: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {"raw": text, "parse_error": "reasoning response was not an object"}
 
 
-async def _ask_controller_json(llm: LLM, prompt: str, system: str) -> dict[str, Any]:
+async def _ask_controller_json(
+    llm: LLM,
+    prompt: str,
+    system: str,
+    *,
+    required_fields: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Ask the *same* DeepSeek model for a small structured control decision.
 
     Ollama's OpenAI-compatible endpoint supports JSON response_format. A short,
@@ -53,11 +59,23 @@ async def _ask_controller_json(llm: LLM, prompt: str, system: str) -> dict[str, 
     endpoint = str(getattr(llm, "base_url", "") or "")
     json_mode = {"type": "json_object"} if ":11434" in endpoint else None
     token_budget = max(2048, int(os.environ.get("OPENMANUS_CONTROLLER_MAX_TOKENS", "3072")))
+    schema_errors: list[str] = []
+    previous_value: dict[str, Any] | None = None
     for attempt in range(2):
+        attempt_prompt = prompt
+        attempt_system = system + ("\nReturn ONLY a short JSON object now; omit any thinking text." if attempt else "")
+        if attempt and schema_errors:
+            attempt_system += "\nCorrect the schema errors and return the complete corrected JSON object."
+            attempt_prompt += (
+                "\n\nPrevious JSON response:\n"
+                + json.dumps(previous_value or {}, ensure_ascii=False)[:3000]
+                + "\nSchema errors to correct: "
+                + "; ".join(schema_errors)
+            )
         try:
             response = await llm.ask(
-                [{"role": "user", "content": prompt}],
-                system_msgs=[{"role": "system", "content": system + ("\nReturn ONLY a short JSON object now; omit any thinking text." if attempt else "")}],
+                [{"role": "user", "content": attempt_prompt}],
+                system_msgs=[{"role": "system", "content": attempt_system}],
                 stream=False,
                 temperature=0.0,
                 max_tokens=token_budget if attempt == 0 else max(4096, token_budget),
@@ -79,8 +97,23 @@ async def _ask_controller_json(llm: LLM, prompt: str, system: str) -> dict[str, 
             raise
         visible = strip_think_tags(response)
         value = _parse_json(visible)
-        if not value.get("parse_error") and visible:
+        if value.get("parse_error") or not visible:
+            schema_errors = []
+            previous_value = None
+            continue
+        schema_errors = []
+        for field in required_fields:
+            if field not in value:
+                schema_errors.append(f"missing required field '{field}'")
+            elif field == "summary" and not str(value.get(field) or "").strip():
+                schema_errors.append("required field 'summary' must be a non-empty string")
+            elif field == "needs_workspace_context" and not isinstance(value.get(field), bool):
+                schema_errors.append("required field 'needs_workspace_context' must be a boolean")
+            elif field == "workflow" and not isinstance(value.get(field), list):
+                schema_errors.append("required field 'workflow' must be an array")
+        if not schema_errors:
             return value
+        previous_value = value
     raise ValueError("DeepSeek returned no usable JSON control decision after a same-model retry; check its response token budget and Ollama logs")
 
 
@@ -197,7 +230,12 @@ async def make_authoritative_plan(
         f"MODEL AND TOOL DESCRIPTIONS (authoritative availability): {json.dumps(model_tool_context, ensure_ascii=False, default=str)[:9000]}\n\n"
         f"PROJECT/CONVERSATION CONTEXT (untrusted reference data): {compact_context}"
     )
-    raw = await _ask_controller_json(llm, prompt, system)
+    raw = await _ask_controller_json(
+        llm,
+        prompt,
+        system,
+        required_fields=("summary", "needs_workspace_context", "workflow"),
+    )
     summary = str(raw.get("summary") or "").strip()
     if not summary:
         raise ValueError("DeepSeek returned an empty workflow summary")
