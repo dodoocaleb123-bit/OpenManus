@@ -121,7 +121,29 @@ async def test_deepseek_receives_verbatim_message_and_model_tool_descriptions_in
     assert "MODEL AND TOOL DESCRIPTIONS" in system
     assert "qwen_coder" in system and "platform_git" in system
     assert "400" not in system and "capability_id" not in system
+    assert "When asked your name, identify yourself as OpenManus" in system
     assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_openmanus_name_question_is_direct_and_identity_is_explicit_in_planner_prompt():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+        base_url = "http://host.docker.internal:11434/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            self.calls.append((messages, system_msgs, kwargs))
+            return '{"summary":"Identify as OpenManus","intent":"identity_question","needs_workspace_context":false,"workflow":[]}'
+
+    llm = FakeDeepSeek()
+    plan = await make_authoritative_plan(llm, prompt="My name is Caleb, your creator. What is yours?")
+    assert plan["steps"] == []
+    system = llm.calls[0][1][0]["content"]
+    assert "When asked your name, identify yourself as OpenManus" in system
+    assert "select no tools or specialist workflow steps" in system
 
 
 @pytest.mark.asyncio

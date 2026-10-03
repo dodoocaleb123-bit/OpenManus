@@ -11,6 +11,13 @@ from openai import BadRequestError
 from app.llm import LLM, strip_think_tags
 
 
+OPENMANUS_IDENTITY_INSTRUCTION = (
+    "OpenManus is the name of the assistant speaking to the user; DeepSeek is the underlying reasoning model, not the assistant's name. "
+    "When asked your name, identify yourself as OpenManus. Do not answer with the user's name, claim to be the human creator, or confuse the assistant with Qwen, Gemma, or another model. "
+    "For a simple greeting or question about OpenManus's name, answer directly and select no tools or specialist workflow steps."
+)
+
+
 def reasoning_enabled() -> bool:
     """Report whether the mandatory DeepSeek control model is configured.
 
@@ -212,6 +219,7 @@ async def make_authoritative_plan(
     }
     compact_context = json.dumps(context_value, ensure_ascii=False, default=str)[:8000]
     system = (
+        OPENMANUS_IDENTITY_INSTRUCTION + " "
         "You are DeepSeek, the reasoning control unit for OpenManus. Every user message reaches you first. "
         "Understand the outcome the user wants; do not classify it into conversation/task/build categories, and do not use keywords or a task-type gate. "
         "Reason from the user message plus the following descriptive inventory of the actual local model roles and OpenManus tools. "

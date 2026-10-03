@@ -14,7 +14,7 @@ from app.logger import logger
 from app.platform.artifacts import artifact_summary, discover_artifacts, workspace_baseline
 from app.platform.browser import BrowserManager
 from app.platform.coding_loop import CodingLoop
-from app.platform.reasoning import reasoning_enabled, review_result
+from app.platform.reasoning import OPENMANUS_IDENTITY_INSTRUCTION, reasoning_enabled, review_result
 from app.platform.models import TERMINAL_STATUSES, Event, Project, Task, TaskStatus
 from app.platform.store import PlatformStore
 from app.platform.sources import citation_records
@@ -564,6 +564,7 @@ class AgentOrchestrator:
                 answer = await answer_llm.ask(
                     [{"role": "user", "content": task.prompt}],
                     system_msgs=[{"role": "system", "content": (
+                        OPENMANUS_IDENTITY_INSTRUCTION + " "
                         "You are DeepSeek, OpenManus's reasoning control unit. You are producing the final user-facing answer for the same task you planned. "
                         "Address the complete original request, combining any requested explanation with actual work completed by specialists. "
                         "If no specialists were needed, answer directly. Be explicit about limitations, unverified user actions, and evidence gaps. "

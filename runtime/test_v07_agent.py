@@ -517,6 +517,7 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
     assert "Retrieved source fact" in synthesis.prompts[0]
     assert "Wide sidebar and compact navigation" in synthesis.prompts[0]
     assert "Compact information-dense navigation" in synthesis.prompts[0]
+    assert "When asked your name, identify yourself as OpenManus" in synthesis.prompts[0]
     assert len(agents) == 1
 
 
