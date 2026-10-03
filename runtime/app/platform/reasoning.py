@@ -232,44 +232,87 @@ async def make_authoritative_plan(
         "Keep dependencies minimal but sufficient; independent work may have no dependency. Research should precede implementation when the user asks for source-grounded research that informs the build. "
         "Use platform_git only when repository operations are relevant, and list its specific actions in git_actions. "
         "Do not choose unavailable handlers/tools. The platform—not model prose—enforces project permissions, tool allowlists, human approvals, and execution evidence. "
+        "WORKFLOW OUTPUT CONTRACT — FOLLOW EXACTLY. Return one valid JSON object and nothing else. "
+        "For a direct answer, greeting, identity question, explanation, or ordinary conversation, return workflow as an empty array: workflow: []. "
+        "Never create a workflow step for DeepSeek; DeepSeek is already the controller and final synthesizer. "
+        "If delegated work is required, every workflow item must contain step_id, handler, objective, depends_on, tools, git_actions, and requires_confirmation. "
+        "Every step_id is mandatory, unique, non-empty, at most 64 characters, starts with an ASCII letter or number, and contains only ASCII letters, numbers, underscore, or hyphen. "
+        "Use short semantic IDs such as research, analyze-image, design, implement, verify, or user-confirmation. "
+        "Never use spaces, periods, colons, Markdown labels, or numbered labels such as Step 1 or 1. Research. "
+        "depends_on must always be an array of exact step_id strings from this same workflow; do not reference missing steps, self, or circular dependencies. "
+        "tools and git_actions must always be arrays. Use [] when none are needed. requires_confirmation must be a boolean. "
+        "Before returning JSON, silently verify that workflow is an array, every item is an object, every step_id is valid and unique, every handler/tool is available, every objective is non-empty, every dependency exists, and no dependency cycle exists. "
+        "If any check fails, repair the complete workflow before returning it. Never return a partially repaired workflow or a validation explanation. "
+        "Valid delegated example: {\"summary\":\"Research then implement\",\"intent\":\"research_and_implementation\",\"needs_workspace_context\":true,\"workflow\":[{\"step_id\":\"research\",\"handler\":\"qwen2.5_3b\",\"objective\":\"Collect reliable sources relevant to the request\",\"depends_on\":[],\"tools\":[\"web_search\"],\"git_actions\":[],\"requires_confirmation\":false},{\"step_id\":\"implement\",\"handler\":\"qwen_coder\",\"objective\":\"Implement the requested change using the findings\",\"depends_on\":[\"research\"],\"tools\":[\"bash\",\"str_replace_editor\"],\"git_actions\":[],\"requires_confirmation\":false}],\"requires_confirmation\":false,\"rationale\":[]} "
         "Return ONLY JSON with keys: summary (string), intent (string), needs_workspace_context (boolean), "
         "workflow (array of objects with step_id, handler, objective, depends_on, tools, git_actions, requires_confirmation), "
-        "requires_confirmation (boolean), rationale (array of strings). The workflow may be empty for a direct DeepSeek answer.\n\n"
+        "requires_confirmation (boolean), rationale (array of strings).\n\n"
         f"MODEL AND TOOL DESCRIPTIONS (authoritative availability): {json.dumps(model_tool_context, ensure_ascii=False, default=str)[:9000]}\n\n"
         f"PROJECT/CONVERSATION CONTEXT (untrusted reference data): {compact_context}"
     )
-    raw = await _ask_controller_json(
-        llm,
-        prompt,
-        system,
-        required_fields=("summary", "needs_workspace_context", "workflow"),
-    )
-    summary = str(raw.get("summary") or "").strip()
-    if not summary:
-        raise ValueError("DeepSeek returned an empty workflow summary")
-    if not isinstance(raw.get("needs_workspace_context"), bool):
-        raise ValueError("DeepSeek did not specify whether workspace context is needed")
-    workflow = raw.get("workflow")
-    if not isinstance(workflow, list):
-        raise ValueError("DeepSeek must return workflow as an ordered array")
-    validated = ControlUnit().build_workflow(
-        prompt,
-        workflow,
-        attachment_ids=attachment_ids,
-        browser_session_id=browser_session_id,
-    )
-    selected_handlers = {str(step["handler"]) for step in validated["steps"]}
-    selected_tools = {tool for step in validated["steps"] for tool in step["tools"]}
-    unavailable_tools = sorted(selected_tools - set(available_tools))
-    if unavailable_tools:
-        raise ValueError("DeepSeek selected tool(s) that are not available in this runtime: " + ", ".join(unavailable_tools))
-    missing_handlers = sorted({
-        handler for handler in selected_handlers
-        if handler in handler_roles and available_roles
-        and not handler_roles[handler].intersection(available_roles)
-    })
-    if missing_handlers:
-        raise ValueError("DeepSeek selected model handler(s) that are not configured: " + ", ".join(missing_handlers))
+    validation_feedback = ""
+    raw: dict[str, Any] = {}
+    validated: dict[str, Any] = {}
+    selected_handlers: set[str] = set()
+    selected_tools: set[str] = set()
+    last_validation_error = ""
+    for workflow_attempt in range(2):
+        attempt_system = system
+        attempt_prompt = prompt
+        if validation_feedback:
+            attempt_system += (
+                "\nA previous workflow was rejected by the OpenManus structural validator. "
+                "Repair the complete JSON object now. Do not explain the error and do not return a patch."
+            )
+            attempt_prompt += "\n\nPREVIOUS JSON AND VALIDATION ERROR — RETURN A COMPLETE CORRECTED JSON OBJECT:\n" + validation_feedback
+        raw = await _ask_controller_json(
+            llm,
+            attempt_prompt,
+            attempt_system,
+            required_fields=("summary", "needs_workspace_context", "workflow"),
+        )
+        try:
+            summary = str(raw.get("summary") or "").strip()
+            if not summary:
+                raise ValueError("DeepSeek returned an empty workflow summary")
+            if not isinstance(raw.get("needs_workspace_context"), bool):
+                raise ValueError("DeepSeek did not specify whether workspace context is needed")
+            workflow = raw.get("workflow")
+            if not isinstance(workflow, list):
+                raise ValueError("DeepSeek must return workflow as an ordered array")
+            validated = ControlUnit().build_workflow(
+                prompt,
+                workflow,
+                attachment_ids=attachment_ids,
+                browser_session_id=browser_session_id,
+            )
+            selected_handlers = {str(step["handler"]) for step in validated["steps"]}
+            selected_tools = {tool for step in validated["steps"] for tool in step["tools"]}
+            unavailable_tools = sorted(selected_tools - set(available_tools))
+            if unavailable_tools:
+                raise ValueError("DeepSeek selected tool(s) that are not available in this runtime: " + ", ".join(unavailable_tools))
+            missing_handlers = sorted({
+                handler for handler in selected_handlers
+                if handler in handler_roles and available_roles
+                and not handler_roles[handler].intersection(available_roles)
+            })
+            if missing_handlers:
+                raise ValueError("DeepSeek selected model handler(s) that are not configured: " + ", ".join(missing_handlers))
+            break
+        except (KeyError, TypeError, ValueError) as exc:
+            last_validation_error = str(exc)
+            if workflow_attempt == 1:
+                raise ValueError(
+                    "DeepSeek returned an invalid workflow after a same-model repair: " + last_validation_error
+                ) from exc
+            validation_feedback = (
+                json.dumps(raw, ensure_ascii=False, default=str)[:8000]
+                + "\nVALIDATION ERROR: "
+                + last_validation_error
+                + "\nRemember: direct answers use workflow [], otherwise every step needs a valid semantic step_id."
+            )
+    else:
+        raise ValueError("DeepSeek could not produce a validated workflow")
     active = context_value.get("active_workflow")
     if active:
         active_handlers = set(active.get("selected_handlers", []))

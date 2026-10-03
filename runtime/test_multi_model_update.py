@@ -212,6 +212,34 @@ async def test_deepseek_repairs_valid_json_with_empty_workflow_summary():
     assert "summary" in llm.calls[1][0][0]["content"]
 
 
+@pytest.mark.asyncio
+async def test_deepseek_repairs_nested_invalid_step_id_with_same_model():
+    class FakeDeepSeek:
+        model = "deepseek-r1:7b"
+        base_url = "http://host.docker.internal:11434/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        async def ask(self, messages, system_msgs=None, **kwargs):
+            self.calls.append((messages, system_msgs, kwargs))
+            if len(self.calls) == 1:
+                return '{"summary":"Answer the user","intent":"question","needs_workspace_context":false,"workflow":[{"handler":"qwen_coder","objective":"Answer the question","depends_on":[],"tools":[],"git_actions":[],"requires_confirmation":false}]}'
+            return '{"summary":"Answer the user directly","intent":"question","needs_workspace_context":false,"workflow":[],"requires_confirmation":false,"rationale":["No specialist is needed"]}'
+
+    llm = FakeDeepSeek()
+    plan = await make_authoritative_plan(llm, prompt="What is OpenManus?", context={"available_model_roles": ROLES, "available_tools": TOOLS})
+    assert plan["steps"] == []
+    assert len(llm.calls) == 2
+    repair_prompt = llm.calls[1][0][0]["content"]
+    assert "needs a valid step_id" in repair_prompt
+    assert "workflow []" in repair_prompt
+    system = llm.calls[0][1][0]["content"]
+    assert "Every step_id is mandatory" in system
+    assert "Never use spaces" in system
+    assert "Valid delegated example" in system
+
+
 def test_model_status_remains_but_numbered_task_registry_endpoint_is_removed(tmp_path: Path):
     app = create_app(tmp_path, check_llm=False)
     with TestClient(app) as client:
