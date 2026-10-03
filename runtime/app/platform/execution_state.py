@@ -13,6 +13,9 @@ class StepState:
     step_id: str
     capability_id: int
     handler: str
+    instruction: str = ""
+    tools: list[str] = field(default_factory=list)
+    requires_user: bool = False
     depends_on: list[str] = field(default_factory=list)
     status: str = "pending"
     attempts: int = 0
@@ -23,7 +26,7 @@ class StepState:
     evidence: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"step_id": self.step_id, "capability_id": self.capability_id, "handler": self.handler, "depends_on": self.depends_on, "status": self.status, "attempts": self.attempts, "handoff_id": self.handoff_id, "started_at": self.started_at, "finished_at": self.finished_at, "error": self.error, "evidence": self.evidence}
+        return {"step_id": self.step_id, "capability_id": self.capability_id, "handler": self.handler, "instruction": self.instruction, "tools": self.tools, "requires_user": self.requires_user, "depends_on": self.depends_on, "status": self.status, "attempts": self.attempts, "handoff_id": self.handoff_id, "started_at": self.started_at, "finished_at": self.finished_at, "error": self.error, "evidence": self.evidence}
 
 
 class ExecutionStateMachine:
@@ -35,7 +38,7 @@ class ExecutionStateMachine:
         self.steps: dict[str, StepState] = {}
         for raw in order_steps(raw_steps):
             step_id = str(raw["step_id"])
-            self.steps[step_id] = StepState(step_id, int(raw["capability_id"]), str(raw["handler"]), [str(x) for x in raw.get("depends_on", [])])
+            self.steps[step_id] = StepState(step_id, int(raw["capability_id"]), str(raw["handler"]), str(raw.get("instruction", "")), [str(x) for x in raw.get("tools", [])], bool(raw.get("requires_user", False)), [str(x) for x in raw.get("depends_on", [])])
         self.events: list[dict[str, Any]] = []
 
     def ready(self) -> list[StepState]:

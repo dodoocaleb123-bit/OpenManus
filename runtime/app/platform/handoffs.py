@@ -34,7 +34,7 @@ class HandoffRequest:
     registry_version: str = field(default_factory=registry_version)
 
     def as_dict(self) -> dict[str, Any]:
-        record = get_capability(self.capability_id)
+        record = get_capability(self.capability_id) if self.capability_id < 900000 else {}
         return {"handoff_id": self.handoff_id, "task_id": self.task_id, "step_id": self.step_id, "capability_id": self.capability_id, "handler": self.handler, "user_request": self.user_request, "approved_context": self.approved_context, "dependency_outputs": self.dependency_outputs, "required_output_schema": self.required_output_schema or {"type": "object"}, "allowed_tools": list(self.allowed_tools or record.get("tools", [])), "allowed_files": list(self.allowed_files), "completion_rules": list(self.completion_rules or record.get("verification", [])), "failure_rules": list(self.failure_rules or [record.get("failure_policy", "report")]), "registry_version": self.registry_version}
 
 
@@ -58,8 +58,9 @@ def validate_result(result: HandoffResult) -> None:
     if result.status == HandoffStatus.COMPLETED:
         if not (result.evidence_refs or result.verification or result.structured_result):
             raise ValueError(f"Completed capability {result.request.capability_id} has no evidence")
-        record = get_capability(result.request.capability_id)
-        validate_json_schema(result.as_dict(), record["output_schema"], path=f"capability[{result.request.capability_id}].output")
+        if result.request.capability_id < 900000:
+            record = get_capability(result.request.capability_id)
+            validate_json_schema(result.as_dict(), record["output_schema"], path=f"capability[{result.request.capability_id}].output")
     if result.status == HandoffStatus.FAILED and not result.error:
         raise ValueError("Failed handoff must include an error")
 

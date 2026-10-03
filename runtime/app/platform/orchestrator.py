@@ -397,7 +397,7 @@ class AgentOrchestrator:
                 selected_actions = {"status", "diff", "log"}
                 selected_actions.update(
                     action for step in git_steps
-                    if (action := _GIT_ACTION_CAPABILITIES.get(int(step["capability_id"])))
+                    if (action := step.get("action") or _GIT_ACTION_CAPABILITIES.get(int(step["capability_id"])))
                 )
                 extra_tools.append(PlatformGitTool(
                     store=self.store,
@@ -502,7 +502,10 @@ class AgentOrchestrator:
                     if not candidates:
                         return True
                     user_step = execution_state.start(candidates[0].step_id)
-                    capability = get_capability(user_step.capability_id)
+                    capability = {
+                        "name": user_step.instruction or "Complete the required user action",
+                        "tools": user_step.tools,
+                    }
                     action_response = await LLM(config_name="reasoning").ask(
                         [{"role": "user", "content": task.prompt}],
                         system_msgs=[{"role": "system", "content": (
@@ -541,18 +544,17 @@ class AgentOrchestrator:
 
             async def execute_deepseek_output() -> str | None:
                 """Execute DeepSeek's selected user-facing capability in this same task."""
-                output_ids = set(range(167, 174))
                 pending_outputs = [
                     step for step in (execution_state.steps.values() if execution_state else [])
-                    if step.handler == "deepseek" and step.capability_id in output_ids and step.status != "completed"
+                    if step.handler == "deepseek" and step.status != "completed"
                 ]
                 if not pending_outputs:
                     return None
                 answer_step = await begin_handler("deepseek")
-                if answer_step is None or answer_step.capability_id not in output_ids:
+                if answer_step is None:
                     raise RuntimeError("DeepSeek's selected answer capability is not ready; selected work or user input remains incomplete")
                 answer_llm = LLM(config_name="reasoning")
-                selected_names = [get_capability(step.capability_id)["name"] for step in pending_outputs]
+                selected_names = [step.instruction or f"DeepSeek output step {step.step_id}" for step in pending_outputs]
                 workspace = (
                     await asyncio.to_thread(build_workspace_context, Path(project.workspace), task.prompt, max_files=5, max_chars=7000)
                     if (task.plan or {}).get("needs_workspace_context")
@@ -620,9 +622,8 @@ class AgentOrchestrator:
                 return answer
 
             attachment_ids = set((task.plan or {}).get("attachment_ids", []))
-            reference_vision_ids = {131, 134}
             has_reference_vision = any(
-                step.handler == "gemma3" and step.capability_id in reference_vision_ids and step.status == "pending"
+                step.handler == "gemma3" and ("image_analysis" in step.tools or step.capability_id in {131, 134}) and step.status == "pending"
                 for step in (execution_state.steps.values() if execution_state else [])
             )
             if has_reference_vision:

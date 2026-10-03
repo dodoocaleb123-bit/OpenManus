@@ -398,13 +398,13 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                         "entry_point": "explicit task execution API or signed automation event",
                     },
                 )
-                selected = [get_capability(int(step["capability_id"])) for step in authoritative["steps"]]
+                selected = authoritative["steps"]
                 plan.update(
                     intent=authoritative["deepseek"].get("intent", "unknown"),
                     summary=authoritative["summary"],
                     needs_workspace_context=authoritative["needs_workspace_context"],
-                    capabilities=[item["name"] for item in selected],
-                    steps=[f"Step {index}: {item['name']} → {item['handler']}" for index, item in enumerate(selected, 1)],
+                    capabilities=[item.get("name") or item.get("action") or item.get("instruction") or item["handler"] for item in selected],
+                    steps=[f"Step {index}: {item.get('name') or item.get('action') or item.get('instruction') or item['handler']} → {item['handler']}" for index, item in enumerate(selected, 1)],
                     attachment_ids=list(plan.get("attachment_ids", [])),
                     control_unit_plan=authoritative,
                     registry_version=authoritative["registry_version"],
@@ -829,13 +829,13 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                     detail=f"DeepSeek could not create the capability workflow: {reason}. No other model or keyword classifier was substituted; check the OpenManus container logs for the underlying error.",
                 ) from exc
 
-            selected = [get_capability(int(step["capability_id"])) for step in authoritative["steps"]]
+            selected = authoritative["steps"]
             plan = {
                 "intent": authoritative["deepseek"].get("intent", "unknown"),
                 "summary": authoritative["summary"],
                 "needs_workspace_context": authoritative["needs_workspace_context"],
-                "capabilities": [item["name"] for item in selected],
-                "steps": [f"Step {index}: {item['name']} → {item['handler']}" for index, item in enumerate(selected, 1)],
+                "capabilities": [item.get("name") or item.get("action") or item.get("instruction") or item["handler"] for item in selected],
+                "steps": [f"Step {index}: {item.get('name') or item.get('action') or item.get('instruction') or item['handler']} → {item['handler']}" for index, item in enumerate(selected, 1)],
                 "attachment_ids": plan_attachment_ids,
                 "control_unit_plan": authoritative,
                 "registry_version": authoritative["registry_version"],
