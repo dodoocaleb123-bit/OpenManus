@@ -378,6 +378,7 @@ class PlatformManus(Manus):
         ask: Callable[[str], Awaitable[Optional[str]]] | None = None,
         request_approval: Callable[[str], Awaitable[Optional[str]]] | None = None,
         extra_tools: list[BaseTool] | None = None,
+        allowed_tools: list[str] | None = None,
         llm: Any = None,
         max_steps: int | None = None,
     ) -> "PlatformManus":
@@ -395,12 +396,22 @@ class PlatformManus(Manus):
             logger.warning(f"web_search unavailable: {exc}")
         tools += list(extra_tools or [])
         tools += [PlatformAskHuman(ask=ask), Terminate()]
+        if allowed_tools is not None:
+            allowed = set(allowed_tools) | {"terminate"}
+            tools = [tool for tool in tools if tool.name in allowed]
         system_prompt = PLATFORM_SYSTEM_PROMPT.format(
             project_name=project_name,
             workspace=ws,
             repository=repository or "none connected",
             branch=branch or "none",
         )
+        if allowed_tools is not None:
+            system_prompt += (
+                "\n\nCURRENT DEEPSEEK WORKFLOW TOOL SCOPE\n"
+                "Only call tools available in this run's tool list. DeepSeek selected these names: "
+                + ", ".join(sorted(set(allowed_tools)))
+                + ". The platform enforces this scope and separate approval rules."
+            )
         agent = await cls.create(
             available_tools=ToolCollection(*tools),
             system_prompt=system_prompt,

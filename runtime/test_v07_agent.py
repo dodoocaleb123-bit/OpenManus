@@ -26,6 +26,16 @@ from app.platform.orchestrator import _research_url
 from app.server import create_app
 from test_support import install_fake_controller
 
+GIT_PUSH_WORKFLOW = [{
+    "step_id": "git-push",
+    "handler": "qwen_coder",
+    "objective": "Push the requested project branch to GitHub",
+    "depends_on": [],
+    "tools": ["bash", "python_execute", "str_replace_editor", "platform_git"],
+    "git_actions": ["push"],
+    "requires_confirmation": True,
+}]
+
 
 # ------------------------------------------------------------------ helpers
 
@@ -74,7 +84,7 @@ def install_fake_deepseek_synthesis(monkeypatch, answer="DeepSeek synthesized th
 def fake_deepseek_controller(monkeypatch, request):
     if request.node.name == "test_unconfigured_llm_fails_fast_with_setup_hint":
         return
-    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_controller(monkeypatch, handlers=["qwen_coder"])
     install_fake_deepseek_synthesis(monkeypatch)
 
 
@@ -305,7 +315,7 @@ def test_agent_question_is_answered_from_the_ui(tmp_path, monkeypatch):
         answer = await agent.channels["ask"]("Which colour scheme?")
         Path(agent.channels["project"].workspace, "choice.txt").write_text(answer)
 
-    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_controller(monkeypatch, handlers=["qwen_coder"])
     synthesis = install_fake_deepseek_synthesis(monkeypatch)
     client, agents = make_client(tmp_path, script)
     with client:
@@ -328,9 +338,7 @@ def test_agent_question_is_answered_from_the_ui(tmp_path, monkeypatch):
 def test_active_task_handoff_reply_is_deepseek_planned_and_delivered_to_the_waiting_agent(tmp_path, monkeypatch):
     calls = install_fake_controller(
         monkeypatch,
-        selector=lambda prompt, context: (
-            [1] if "active_workflow" not in context or prompt == "dark" else [167]
-        ),
+            selector=lambda prompt, context: ["qwen_coder"],
     )
     install_fake_deepseek_synthesis(monkeypatch)
 
@@ -354,7 +362,7 @@ def test_active_task_handoff_reply_is_deepseek_planned_and_delivered_to_the_wait
     assert (Path(project["workspace"]) / "choice.txt").read_text() == "dark"
 
 
-def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path, monkeypatch):
+def test_post_build_user_action_resumes_model_authored_qwen_step(tmp_path, monkeypatch):
     class UserInstructionDeepSeek:
         model = "deepseek-r1:7b"
 
@@ -368,10 +376,14 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
 
     def selector(prompt, context):
         if context.get("active_workflow") and prompt == "request a new unselected step":
-            return [5]
-        return [1, 231, 3]
+            return ["qwen2.5_3b"]
+        return [
+            {"step_id": "build-first", "handler": "qwen_coder", "objective": "Build the first stage", "depends_on": [], "tools": ["bash", "python_execute", "str_replace_editor"], "git_actions": []},
+            {"step_id": "verify-with-user", "handler": "user", "objective": "Ask the user to verify the first-stage preview", "depends_on": ["build-first"], "tools": ["ask_human"], "git_actions": []},
+            {"step_id": "continue-build", "handler": "qwen_coder", "objective": "Inspect the user verification and finish the build", "depends_on": ["verify-with-user"], "tools": ["bash", "python_execute", "str_replace_editor"], "git_actions": []},
+        ]
 
-    install_fake_controller(monkeypatch, capability_ids=[1, 231, 3], selector=selector)
+    install_fake_controller(monkeypatch, handlers=["user", "qwen_coder"], selector=selector)
     run_prompts = []
 
     async def script(agent, prompt):
@@ -392,7 +404,7 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
             json={"message": "request a new unselected step"},
         )
         assert unselected.status_code == 409
-        assert "new capability step" in unselected.json()["detail"]
+        assert "new model handler" in unselected.json()["detail"]
         response = client.post(
             f"/api/tasks/{task['id']}/messages",
             json={"message": "I verified the first stage; continue."},
@@ -413,10 +425,10 @@ def test_post_build_user_action_resumes_later_selected_qwen_capability(tmp_path,
     assert agents[0].closed
 
 
-def test_malformed_design_specialist_result_cannot_complete_capability(tmp_path, monkeypatch):
+def test_malformed_design_specialist_result_cannot_complete_workflow_step(tmp_path, monkeypatch):
     from app.platform.specialists import SpecialistGateway
 
-    install_fake_controller(monkeypatch, capability_ids=[135])
+    install_fake_controller(monkeypatch, handlers=["llama3.2_3b"])
 
     async def malformed(self, role, *, instruction, context=None, max_tokens=1800):
         return {"role": role, "parse_error": "specialist returned malformed JSON"}
@@ -441,7 +453,7 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
     from PIL import Image
     from app.platform.specialists import SpecialistGateway
 
-    install_fake_controller(monkeypatch, capability_ids=[131, 147, 135, 1])
+    install_fake_controller(monkeypatch, handlers=["gemma3", "qwen2.5_3b", "llama3.2_3b", "qwen_coder"])
     synthesis = install_fake_deepseek_synthesis(monkeypatch, "DeepSeek combined the research, image, design, and build results.")
     monkeypatch.setattr("app.platform.orchestrator.reasoning_enabled", lambda: False)
     observed = {}
@@ -509,14 +521,14 @@ def test_current_image_handoff_reaches_design_model_and_coder(tmp_path, monkeypa
 
 
 def test_selected_git_push_fails_without_platform_action_evidence(tmp_path, monkeypatch):
-    from app.platform.orchestrator import _verified_git_action
+    from app.platform.orchestrator import _verified_git_actions
 
-    assert not _verified_git_action(83, [])
-    assert not _verified_git_action(83, [{"tool": "platform_git", "ok": False, "evidence": {"action": "push"}}])
-    assert not _verified_git_action(83, [{"tool": "platform_git", "ok": True, "evidence": {"action": "commit"}}])
-    assert _verified_git_action(83, [{"tool": "platform_git", "ok": True, "evidence": {"action": "push"}}])
+    assert not _verified_git_actions(["push"], [])
+    assert not _verified_git_actions(["push"], [{"tool": "platform_git", "ok": False, "evidence": {"action": "push"}}])
+    assert not _verified_git_actions(["push"], [{"tool": "platform_git", "ok": True, "evidence": {"action": "commit"}}])
+    assert _verified_git_actions(["push"], [{"tool": "platform_git", "ok": True, "evidence": {"action": "push"}}])
 
-    install_fake_controller(monkeypatch, capability_ids=[83])
+    install_fake_controller(monkeypatch, step_specs=GIT_PUSH_WORKFLOW)
 
     async def unrelated(agent, prompt):
         Path(agent.channels["project"].workspace, "unrelated.txt").write_text("unrelated")
@@ -531,16 +543,16 @@ def test_selected_git_push_fails_without_platform_action_evidence(tmp_path, monk
         task = client.get(f"/api/tasks/{task_id}").json()
 
     assert task["status"] == "failed"
-    assert "no successful platform_git action evidence" in task["error"]
+    assert "lacks evidence for a selected platform_git action" in task["error"]
     assert "platform_git" in agents[0].channels["tools"]
     git_tool = agents[0].channels["tools"]["platform_git"]
-    assert set(git_tool.allowed_actions) == {"status", "diff", "log", "push"}
+    assert set(git_tool.allowed_actions) == {"push"}
     denied = asyncio.run(git_tool.execute(action="publish_repository", repo_name="unselected"))
     assert denied.error and "not selected" in denied.error
 
 
 def test_selected_git_push_handoff_records_matching_tool_provenance(tmp_path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[83])
+    install_fake_controller(monkeypatch, step_specs=GIT_PUSH_WORKFLOW)
 
     async def proven(agent, prompt):
         await agent.channels["emit"]("agent.tool_result", "platform_git done", {
@@ -557,7 +569,7 @@ def test_selected_git_push_handoff_records_matching_tool_provenance(tmp_path, mo
         task = client.get(f"/api/tasks/{task_id}").json()
 
     assert task["status"] == "succeeded"
-    git_handoff = next(item for item in task["evidence"]["handoffs"] if item["capability_id"] == 83)
+    git_handoff = next(item for item in task["evidence"]["handoffs"] if item["handler"] == "qwen_coder")
     assert any(ref["type"] == "platform_git_action" and ref["evidence"]["pushed"] for ref in git_handoff["evidence_refs"])
 
 

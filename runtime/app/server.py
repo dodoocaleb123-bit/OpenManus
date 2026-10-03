@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import build_router
+from app.api.routes import available_planner_tools, build_router
 from app.config import config
 from app.llm import LLM, strip_think_tags
 from app.platform.auth import BasicAuthMiddleware
@@ -22,7 +22,7 @@ from app.platform.browser_api import build_browser_router
 from app.platform.store import PlatformStore
 from app.platform.automation import AutomationRunner, AutomationStore, ProcessManager
 from app.platform.terminal import ProjectTerminalManager
-from app.platform.capability_registry import get_capability, model_status_from_env
+from app.platform.model_profiles import status_from_env as model_status_from_env
 from app.platform.models import Event
 from app.platform.reasoning import make_authoritative_plan, reasoning_enabled
 
@@ -74,19 +74,18 @@ def create_app(
                 "project_memory": memory.get("content", ""),
                 "configured_models": model_status_from_env(),
                 "available_model_roles": sorted(config.llm.keys()),
+                "available_tools": available_planner_tools(orchestrator),
                 "entry_point": "scheduled automation",
             },
         )
-        selected = [get_capability(int(step["capability_id"])) for step in plan["steps"]]
         task_plan = {
-            "intent": plan["deepseek"].get("intent", "unknown"),
+            "intent": plan["intent"],
             "summary": plan["summary"],
             "needs_workspace_context": plan["needs_workspace_context"],
-            "capabilities": [item["name"] for item in selected],
-            "steps": [f"Step {index}: {item['name']} → {item['handler']}" for index, item in enumerate(selected, 1)],
+            "workflow": [{"step_id": step["step_id"], "objective": step["objective"], "handler": step["handler"], "tools": step["tools"]} for step in plan["steps"]],
+            "steps": [f"{step['step_id']}: {step['objective']} → {step['handler']}" for step in plan["steps"]],
             "attachment_ids": [],
             "control_unit_plan": plan,
-            "registry_version": plan["registry_version"],
             "planner": "deepseek",
             "planner_authoritative": True,
             "deepseek_preflight": {"enabled": True, "configured": True, "status": "completed", "model": plan.get("deepseek", {}).get("model"), "authoritative": True},
@@ -95,7 +94,7 @@ def create_app(
         task.plan = task_plan
         await store.save_task(task)
         await asyncio.to_thread(store.add_chat_message, project_id, "user", prompt, task_id=task.id)
-        await store.emit(Event(task_id=task.id, type="task.planned", message="DeepSeek selected the scheduled workflow", data={"plan": task_plan}))
+        await store.emit(Event(task_id=task.id, type="task.planned", message="DeepSeek planned the scheduled workflow", data={"plan": task_plan}))
         orchestrator.start(task)
         return task
 

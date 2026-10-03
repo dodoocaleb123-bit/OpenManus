@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from app.platform.models import ChatMessage, TERMINAL_EVENT_TYPES, TERMINAL_STATUSES, Event, Project, Task, TaskStatus, UploadedFile
-from app.platform.phase_d import DEFAULT_POLICY, capability_registry, normalize_policy, validate_plugin_manifest
+from app.platform.phase_d import DEFAULT_POLICY, configured_model_profiles, normalize_policy, validate_plugin_manifest
 
 
 class PlatformStore:
@@ -181,7 +181,7 @@ class PlatformStore:
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS idx_chat_task ON chat_messages(task_id,created_at) WHERE task_id IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS idx_chat_request ON chat_messages(project_id,request_id,created_at) WHERE request_id IS NOT NULL")
-            for profile in capability_registry():
+            for profile in configured_model_profiles():
                 db.execute(
                     "INSERT INTO model_capabilities(model,provider,capabilities,enabled,source,updated_at) VALUES(?,?,?,?,?,?) "
                     "ON CONFLICT(model) DO UPDATE SET provider=excluded.provider, capabilities=excluded.capabilities, source=excluded.source, updated_at=excluded.updated_at",

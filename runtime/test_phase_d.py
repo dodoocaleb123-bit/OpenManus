@@ -38,7 +38,7 @@ def test_phase_d_store_initializes_owner_policy_and_registry(tmp_path: Path):
 
 
 def test_phase_d_api_and_evaluation(tmp_path: Path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_controller(monkeypatch, handlers=["qwen_coder"])
     app = create_app(tmp_path, check_llm=False)
     with TestClient(app) as client:
         client.app.state.orchestrator.start = lambda task: None

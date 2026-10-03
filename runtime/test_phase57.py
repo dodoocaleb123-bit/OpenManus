@@ -47,7 +47,7 @@ def test_sources_are_structured_and_deduplicated():
 
 
 def test_metrics_and_evidence_include_sources(tmp_path: Path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[147])
+    install_fake_controller(monkeypatch, handlers=["qwen2.5_3b"])
     client = TestClient(create_app(tmp_path, check_llm=False))
     client.app.state.orchestrator.start = lambda task: None
     project = client.post("/api/projects", json={"name": "metrics"}).json()

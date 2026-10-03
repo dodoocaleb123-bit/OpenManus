@@ -31,7 +31,7 @@ def make_client(tmp_path, monkeypatch):
 
 def test_deepseek_selects_workflow_and_legacy_mode_field_does_not_gate_it(tmp_path, monkeypatch):
     def choose(prompt, context):
-        return [1] if prompt == "Create a calculator app" else [168]
+        return ["qwen_coder"] if prompt == "Create a calculator app" else []
 
     calls = install_fake_controller(monkeypatch, selector=choose)
     client = TestClient(create_app(tmp_path, check_llm=False))
@@ -45,7 +45,7 @@ def test_deepseek_selects_workflow_and_legacy_mode_field_does_not_gate_it(tmp_pa
     assert answer.status_code == 200
     assert answer.json()["kind"] == "task"
     assert "route" not in answer.json()["plan"]
-    assert answer.json()["task"]["plan"]["control_unit_plan"]["selected_capabilities"] == [168]
+    assert answer.json()["task"]["plan"]["control_unit_plan"]["steps"] == []
     assert calls[0]["prompt"] == "Explain this source.py file"
 
     build = client.post(f"/api/projects/{project['id']}/chat", json={"message": "Create a calculator app", "mode": "answer"})
@@ -85,7 +85,7 @@ def test_project_memory_is_persisted_scoped_and_rejects_credentials(tmp_path, mo
 
 
 def test_task_launch_idempotency_returns_existing_task_without_duplicate_chat(tmp_path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_controller(monkeypatch, handlers=["qwen_coder"])
     monkeypatch.setattr("app.api.routes.LLM", FakeChatLLM)
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = client.post("/api/projects", json={"name": "idempotency"}).json()

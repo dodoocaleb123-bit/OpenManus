@@ -40,7 +40,7 @@ from app.platform.store import PlatformStore
 from app.platform.automation import AutomationStore, ProcessManager, parse_preview_command, verify_webhook, wait_for_port
 from app.platform.terminal import ProjectTerminalManager
 from app.platform.parallel_research import parallel_research
-from app.platform.capability_registry import get_capability, capabilities as registry_capabilities, model_status_from_env, registry_version
+from app.platform.model_profiles import status_from_env as model_status_from_env
 from app.platform.model_health import check_all_model_roles
 
 # Proxies (Render included) close idle HTTP connections; a comment frame every
@@ -64,6 +64,29 @@ def _rate_limit_exception(exc: BaseException) -> bool:
         last = exc.last_attempt.exception()
         return bool(last and (isinstance(last, RateLimitError) or last.__class__.__name__ == "RateLimitError"))
     return False
+
+
+def available_planner_tools(orchestrator=None) -> list[str]:
+    """Describe adapters that this process can actually construct for execution."""
+    tools = {"bash", "python_execute", "str_replace_editor", "ask_human", "terminate"}
+    try:
+        from app.tool.web_search import WebSearch  # noqa: F401
+        tools.add("web_search")
+    except Exception:
+        pass
+    browsers = getattr(orchestrator, "browsers", None)
+    if browsers is not None:
+        try:
+            from app.platform.browser_agent_tool import PlatformBrowserTool  # noqa: F401
+            tools.add("platform_browser")
+        except Exception:
+            pass
+    try:
+        from app.platform.git_tool import PlatformGitTool  # noqa: F401
+        tools.add("platform_git")
+    except Exception:
+        pass
+    return sorted(tools)
 
 
 def _image_payload(path: Path, content_type: str | None) -> tuple[bytes, str]:
@@ -395,19 +418,18 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                         "project_memory": memory.get("content", ""),
                         "configured_models": model_status_from_env(),
                         "available_model_roles": sorted(config.llm.keys()),
+                        "available_tools": available_planner_tools(orchestrator),
                         "entry_point": "explicit task execution API or signed automation event",
                     },
                 )
-                selected = [get_capability(int(step["capability_id"])) for step in authoritative["steps"]]
                 plan.update(
-                    intent=authoritative["deepseek"].get("intent", "unknown"),
+                    intent=authoritative["intent"],
                     summary=authoritative["summary"],
                     needs_workspace_context=authoritative["needs_workspace_context"],
-                    capabilities=[item["name"] for item in selected],
-                    steps=[f"Step {index}: {item['name']} → {item['handler']}" for index, item in enumerate(selected, 1)],
+                    workflow=[{"step_id": step["step_id"], "objective": step["objective"], "handler": step["handler"], "tools": step["tools"]} for step in authoritative["steps"]],
+                    steps=[f"{step['step_id']}: {step['objective']} → {step['handler']}" for step in authoritative["steps"]],
                     attachment_ids=list(plan.get("attachment_ids", [])),
                     control_unit_plan=authoritative,
-                    registry_version=authoritative["registry_version"],
                     planner="deepseek",
                     planner_authoritative=True,
                     deepseek_preflight={"enabled": True, "configured": True, "status": "completed", "model": authoritative.get("deepseek", {}).get("model"), "authoritative": True},
@@ -438,7 +460,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             task.browser_session_id = browser_session_id
         await store.save_task(task)
         await store.emit(Event(task_id=task.id, type="task.planned", message="Plan created", data={"plan": plan}))
-        audit("task.created", project_id=project_id, task_id=task.id, intent=plan.get("intent"), capabilities=plan.get("capabilities", []))
+        audit("task.created", project_id=project_id, task_id=task.id, intent=plan.get("intent"), workflow_handlers=[step.get("handler") for step in (plan.get("control_unit_plan") or {}).get("steps", [])])
         orchestrator.start(task)
         return task, user_message, assistant_message
 
@@ -450,11 +472,6 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
     @router.get("/health")
     async def health():
         return {"status": "ok", "service": "openmanus-platform"}
-
-    @router.get("/capabilities/registry")
-    async def capability_registry_endpoint():
-        """Return the authoritative registry without secrets or model prompts."""
-        return {"schema_version": registry_version(), "count": len(registry_capabilities()), "capabilities": registry_capabilities()}
 
     @router.get("/capabilities/models/status")
     async def model_role_status():
@@ -806,6 +823,7 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                 "recent_task_state": active_tasks,
                 "configured_models": model_status_from_env(),
                 "available_model_roles": sorted(config.llm.keys()),
+                "available_tools": available_planner_tools(request.app.state.orchestrator),
             }
             try:
                 authoritative = await make_authoritative_plan(
@@ -821,29 +839,27 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
                         status_code=429,
                         detail="The local DeepSeek controller encountered a rate limit or quota limit. Wait for capacity to reset, then try again.",
                     ) from exc
-                logger.exception("DeepSeek failed to create the user's capability workflow")
+                logger.exception("DeepSeek failed to create the user's workflow")
                 audit("deepseek.authoritative_plan", project_id=project_id, status="failed")
                 reason = str(exc)[:240] if isinstance(exc, ValueError) else "The local DeepSeek request failed or timed out"
                 raise HTTPException(
                     status_code=503,
-                    detail=f"DeepSeek could not create the capability workflow: {reason}. No other model or keyword classifier was substituted; check the OpenManus container logs for the underlying error.",
+                    detail=f"DeepSeek could not create the workflow: {reason}. No other model or keyword classifier was substituted; check the OpenManus container logs for the underlying error.",
                 ) from exc
 
-            selected = [get_capability(int(step["capability_id"])) for step in authoritative["steps"]]
             plan = {
-                "intent": authoritative["deepseek"].get("intent", "unknown"),
+                "intent": authoritative["intent"],
                 "summary": authoritative["summary"],
                 "needs_workspace_context": authoritative["needs_workspace_context"],
-                "capabilities": [item["name"] for item in selected],
-                "steps": [f"Step {index}: {item['name']} → {item['handler']}" for index, item in enumerate(selected, 1)],
+                "workflow": [{"step_id": step["step_id"], "objective": step["objective"], "handler": step["handler"], "tools": step["tools"]} for step in authoritative["steps"]],
+                "steps": [f"{step['step_id']}: {step['objective']} → {step['handler']}" for step in authoritative["steps"]],
                 "attachment_ids": plan_attachment_ids,
                 "control_unit_plan": authoritative,
-                "registry_version": authoritative["registry_version"],
                 "planner": "deepseek",
                 "planner_authoritative": True,
                 "deepseek_preflight": {"enabled": True, "configured": True, "status": "completed", "model": authoritative.get("deepseek", {}).get("model"), "authoritative": True},
             }
-            audit("deepseek.authoritative_plan", project_id=project_id, status="completed", model=authoritative.get("deepseek", {}).get("model"), selected_capabilities=authoritative.get("selected_capabilities", []))
+            audit("deepseek.authoritative_plan", project_id=project_id, status="completed", model=authoritative.get("deepseek", {}).get("model"), selected_handlers=authoritative.get("selected_handlers", []), selected_tools=authoritative.get("selected_tools", []))
             require_role(project_id, request, "editor")
             task, user_message, assistant_message = await launch_task(
                 project_id,
@@ -1190,7 +1206,6 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         control_plan = (task.plan or {}).get("control_unit_plan") or {}
         active_steps = list(control_plan.get("steps", []))
         active_handlers = {str(step.get("handler")) for step in active_steps if step.get("handler")}
-        resumable_ids = [int(step["capability_id"]) for step in active_steps if step.get("capability_id") is not None]
         pending_question = orchestrator.pending_question(task_id) or task.pending_question
         history = await asyncio.to_thread(store.list_chat_messages, task.project_id, 12)
         memory = await asyncio.to_thread(store.get_project_memory, task.project_id)
@@ -1200,14 +1215,14 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             "project_memory": memory.get("content", ""),
             "configured_models": model_status_from_env(),
             "available_model_roles": sorted(config.llm.keys()),
+            "available_tools": available_planner_tools(request.app.state.orchestrator),
             "active_workflow": {
                 "task_id": task.id,
                 "status": task.status.value,
                 "original_request": task.prompt[:5000],
                 "pending_question": pending_question,
-                "pending_capability_ids": [int(step["capability_id"]) for step in active_steps if step.get("handler") == "user" and step.get("capability_id") is not None],
-                "resumable_capability_ids": resumable_ids,
                 "selected_handlers": sorted(active_handlers),
+                "selected_tools": sorted({tool for step in active_steps for tool in step.get("tools", [])}),
                 "selected_plan": (task.plan or {}).get("summary", ""),
             },
         }
@@ -1221,27 +1236,27 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
             )
         except Exception as exc:
             logger.exception("DeepSeek failed to route an active-task message")
-            raise HTTPException(status_code=503, detail="DeepSeek could not route this message. No fallback classifier was used.") from exc
+            raise HTTPException(status_code=503, detail="DeepSeek could not plan this message. No fallback classifier was used.") from exc
 
         workspace_reference = (
             await asyncio.to_thread(build_workspace_context, Path(project.workspace), prompt, max_files=3, max_chars=3500)
             if authoritative["needs_workspace_context"]
             else "DeepSeek decided that no repository excerpts are needed for this follow-up."
         )
-        selected_capability_ids = {int(item) for item in authoritative.get("selected_capabilities", [])}
-        resumable_capability_ids = set(resumable_ids)
-        if not selected_capability_ids.issubset(resumable_capability_ids):
-            missing = sorted(selected_capability_ids - resumable_capability_ids)
-            raise HTTPException(
-                status_code=409,
-                detail="DeepSeek selected new capability step(s) " + ", ".join(map(str, missing)) + ". Let the current task finish, then send the request again.",
-            )
-        selected_handlers = {str(step.get("handler")) for step in authoritative.get("steps", []) if step.get("handler")}
-        if not selected_handlers.issubset(active_handlers):
+        selected_handlers = set(authoritative.get("selected_handlers", []))
+        if not selected_handlers.issubset(active_handlers | {"user"}):
             missing = sorted(selected_handlers - active_handlers)
             raise HTTPException(
                 status_code=409,
-                detail="DeepSeek routed this as a new capability workflow (" + ", ".join(missing) + "). Let the current task finish, then send the request again.",
+                detail="DeepSeek selected new model handler(s) (" + ", ".join(missing) + "). Let the current task finish, then send the request again.",
+            )
+        active_tools = {tool for step in active_steps for tool in step.get("tools", [])}
+        selected_tools = set(authoritative.get("selected_tools", []))
+        if not selected_tools.issubset(active_tools):
+            missing_tools = sorted(selected_tools - active_tools)
+            raise HTTPException(
+                status_code=409,
+                detail="DeepSeek selected new tool(s) (" + ", ".join(missing_tools) + "). Let the current task finish, then send the request again.",
             )
         task.plan = dict(task.plan or {})
         followups = list(task.plan.get("followup_plans", []))
@@ -1250,13 +1265,13 @@ def build_router(store: PlatformStore, orchestrator: AgentOrchestrator, automati
         task.evidence.setdefault("followup_workflows", []).append({
             "summary": authoritative["summary"],
             "handlers": sorted(selected_handlers),
-            "capability_ids": authoritative.get("selected_capabilities", []),
+            "tools": sorted(selected_tools),
         })
         await store.save_task(task)
         await store.emit(Event(
             task_id=task_id,
             type="task.followup_routed",
-            message="DeepSeek mapped user guidance to the active workflow capabilities",
+            message="DeepSeek mapped user guidance to the active workflow",
             data={"workflow": authoritative, "handlers": sorted(selected_handlers)},
         ))
         try:

@@ -36,11 +36,16 @@ def test_bounded_gather_never_exceeds_limit():
     assert peak <= 2
 
 
-def test_registry_assigns_only_the_explicitly_selected_capability_handlers():
-    plan = ControlUnit().plan_from_capability_ids("opaque user request", [147, 135, 1])
+def test_model_authored_workflow_lists_only_selected_handlers_and_tools():
+    steps = [
+        {"step_id": "research", "handler": "qwen2.5_3b", "objective": "Research the question", "tools": ["web_search"]},
+        {"step_id": "design", "handler": "llama3.2_3b", "objective": "Create a design brief", "depends_on": ["research"], "tools": []},
+        {"step_id": "build", "handler": "qwen_coder", "objective": "Build the result", "depends_on": ["research", "design"], "tools": ["bash", "str_replace_editor"]},
+    ]
+    plan = ControlUnit().build_workflow("opaque user request", steps)
     assert {step["handler"] for step in plan["steps"]} >= {"qwen2.5_3b", "llama3.2_3b", "qwen_coder"}
-    same_selection = ControlUnit().plan_from_capability_ids("unrelated words", [147, 135, 1])
-    assert [step["handler"] for step in plan["steps"]] == [step["handler"] for step in same_selection["steps"]]
+    assert plan["steps"][-1]["tools"] == ["bash", "str_replace_editor"]
+    assert "capability_id" not in str(plan)
 
 
 def test_specialist_capability_owners_are_explicit_model_roles():
@@ -50,25 +55,29 @@ def test_specialist_capability_owners_are_explicit_model_roles():
     assert ROLES["coder"].model_config_name == "heavy_coding"
 
 
-def test_gemma_browser_review_is_ordered_after_qwen_build_and_declares_browser_tool():
-    plan = ControlUnit().plan_from_capability_ids("Build and visually inspect a web app", [132])
-    by_id = {step["capability_id"]: step for step in plan["steps"]}
-    assert by_id[132]["handler"] == "gemma3"
-    assert "browser" in by_id[132]["tools"]
-    assert by_id[1]["step_id"] in by_id[132]["depends_on"]
-    ordered = [step["capability_id"] for step in plan["steps"]]
-    assert ordered.index(1) < ordered.index(132)
+def test_gemma_browser_review_can_depend_on_the_qwen_build():
+    plan = ControlUnit().build_workflow("Build and visually inspect a web app", [
+        {"step_id": "build", "handler": "qwen_coder", "objective": "Build the web app", "depends_on": [], "tools": ["bash", "str_replace_editor", "platform_browser"]},
+        {"step_id": "visual-review", "handler": "gemma3", "objective": "Review the rendered app", "depends_on": ["build"], "tools": ["platform_browser"]},
+    ])
+    by_id = {step["step_id"]: step for step in plan["steps"]}
+    assert by_id["visual-review"]["handler"] == "gemma3"
+    assert "platform_browser" in by_id["visual-review"]["tools"]
+    assert "build" in by_id["visual-review"]["depends_on"]
 
 
 def test_user_handoff_respects_deepseek_selected_order_around_coding():
-    before = ControlUnit().plan_from_capability_ids("Take over, then build", [231, 1])
-    before_by_id = {step["capability_id"]: step for step in before["steps"]}
-    assert before_by_id[231]["step_id"] in before_by_id[1]["depends_on"]
+    before = ControlUnit().build_workflow("Take over, then build", [
+        {"step_id": "user", "handler": "user", "objective": "Take over the browser", "depends_on": [], "tools": ["ask_human"]},
+        {"step_id": "build", "handler": "qwen_coder", "objective": "Build after the user action", "depends_on": ["user"], "tools": ["bash"]},
+    ])
+    assert before["steps"][1]["depends_on"] == ["user"]
 
-    after = ControlUnit().plan_from_capability_ids("Build, then let the user take over", [1, 231])
-    after_by_id = {step["capability_id"]: step for step in after["steps"]}
-    assert after_by_id[1]["step_id"] in after_by_id[231]["depends_on"]
-    assert after_by_id[231]["step_id"] not in after_by_id[1]["depends_on"]
+    after = ControlUnit().build_workflow("Build, then let the user take over", [
+        {"step_id": "build", "handler": "qwen_coder", "objective": "Build the first stage", "depends_on": [], "tools": ["bash"]},
+        {"step_id": "user", "handler": "user", "objective": "Verify the first stage", "depends_on": ["build"], "tools": ["ask_human"]},
+    ])
+    assert after["steps"][1]["depends_on"] == ["build"]
 
 
 def test_every_scheduled_prompt_becomes_a_deepseek_planned_task(tmp_path, monkeypatch):
@@ -80,9 +89,9 @@ def test_every_scheduled_prompt_becomes_a_deepseek_planned_task(tmp_path, monkey
 
     async def fake_plan(llm, *, prompt, attachment_ids=None, browser_session_id=None, context=None):
         seen.append((prompt, context))
-        ids = [1] if prompt == "run the selected work" else [167]
-        plan = ControlUnit().plan_from_capability_ids(prompt, ids)
-        plan.update(authoritative=True, needs_workspace_context=False, summary="Selected by fake DeepSeek", deepseek={"model": "deepseek-test", "intent": "test"})
+        steps = [{"step_id": "build", "handler": "qwen_coder", "objective": "Run the selected project work", "tools": ["bash", "python_execute", "str_replace_editor"]}] if prompt == "run the selected work" else []
+        plan = ControlUnit().build_workflow(prompt, steps)
+        plan.update(needs_workspace_context=False, summary="Selected by fake DeepSeek", intent="test", selected_handlers=sorted({step["handler"] for step in steps}), selected_tools=sorted({tool for step in steps for tool in step["tools"]}), deepseek={"model": "deepseek-test", "intent": "test"})
         return plan
 
     monkeypatch.setattr("app.server.make_authoritative_plan", fake_plan)
@@ -129,7 +138,7 @@ def test_preview_command_detection_and_override(tmp_path: Path):
 
 
 def test_phase_c_routes_and_process_manager(tmp_path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_controller(monkeypatch, handlers=["qwen_coder"])
     client = TestClient(create_app(tmp_path, check_llm=False))
     client.app.state.orchestrator.start = lambda task: None
     project = client.post("/api/projects", json={"name": "phase-c"}).json()

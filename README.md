@@ -15,8 +15,8 @@ This build extends the OpenManus runtime with a product/platform layer for auton
 - Persistent event history and SSE streaming.
 - Task resume endpoint and task-history UI.
 - One project composer: every accepted user message goes to the local DeepSeek control unit and becomes a tracked task workflow.
-- Capability-based specialist handoffs for research, vision, design, coding, user actions, and final DeepSeek synthesis.
-- SQLite chat history, task state, capability plans, evidence, and SSE progress streaming.
+- DeepSeek-authored specialist workflows based on descriptive local model roles and available OpenManus tools; DeepSeek also handles direct answers and final synthesis.
+- SQLite chat history, task state, workflow plans, evidence, and SSE progress streaming.
 
 ## Run
 
@@ -42,7 +42,7 @@ FastAPI Platform API
   ↓
 DeepSeek Control Unit (local Ollama)
   ↓
-Validated capability workflow and specialist handoffs
+DeepSeek-authored model/tool workflow and specialist handoffs
   ↓
 Durable Project/Task/Event Store (SQLite)
   ↓

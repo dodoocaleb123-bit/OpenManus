@@ -1,4 +1,4 @@
-"""Runtime state machine for registry-backed multi-model task execution."""
+"""Runtime state machine for DeepSeek-authored multi-model workflows."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,9 +11,12 @@ from app.platform.handoffs import HandoffResult, HandoffStatus, order_steps
 @dataclass
 class StepState:
     step_id: str
-    capability_id: int
     handler: str
+    objective: str
     depends_on: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    git_actions: list[str] = field(default_factory=list)
+    requires_confirmation: bool = False
     status: str = "pending"
     attempts: int = 0
     handoff_id: str | None = None
@@ -23,23 +26,51 @@ class StepState:
     evidence: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"step_id": self.step_id, "capability_id": self.capability_id, "handler": self.handler, "depends_on": self.depends_on, "status": self.status, "attempts": self.attempts, "handoff_id": self.handoff_id, "started_at": self.started_at, "finished_at": self.finished_at, "error": self.error, "evidence": self.evidence}
+        return {
+            "step_id": self.step_id,
+            "handler": self.handler,
+            "objective": self.objective,
+            "depends_on": self.depends_on,
+            "tools": self.tools,
+            "git_actions": self.git_actions,
+            "requires_confirmation": self.requires_confirmation,
+            "status": self.status,
+            "attempts": self.attempts,
+            "handoff_id": self.handoff_id,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "evidence": self.evidence,
+        }
 
 
 class ExecutionStateMachine:
-    """Deterministic orchestration state independent from model text."""
+    """Dependency and pause state independent from model-generated prose."""
 
     def __init__(self, plan: dict[str, Any]):
         raw_steps = list(plan.get("steps") or [])
-        self.registry_version = plan.get("registry_version", "unknown")
         self.steps: dict[str, StepState] = {}
         for raw in order_steps(raw_steps):
             step_id = str(raw["step_id"])
-            self.steps[step_id] = StepState(step_id, int(raw["capability_id"]), str(raw["handler"]), [str(x) for x in raw.get("depends_on", [])])
+            # The objective fallback allows tasks persisted by older releases
+            # to be inspected/recovered without retaining their registry.
+            objective = str(raw.get("objective") or raw.get("name") or "Previously planned workflow step")
+            self.steps[step_id] = StepState(
+                step_id=step_id,
+                handler=str(raw["handler"]),
+                objective=objective,
+                depends_on=[str(value) for value in raw.get("depends_on", [])],
+                tools=[str(value) for value in raw.get("tools", [])],
+                git_actions=[str(value) for value in raw.get("git_actions", [])],
+                requires_confirmation=bool(raw.get("requires_confirmation", False)),
+            )
         self.events: list[dict[str, Any]] = []
 
     def ready(self) -> list[StepState]:
-        return [step for step in self.steps.values() if step.status == "pending" and all(self.steps[dep].status == "completed" for dep in step.depends_on)]
+        return [
+            step for step in self.steps.values()
+            if step.status == "pending" and all(self.steps[dep].status == "completed" for dep in step.depends_on)
+        ]
 
     def start(self, step_id: str, handoff_id: str | None = None) -> StepState:
         step = self.steps[step_id]
@@ -92,4 +123,10 @@ class ExecutionStateMachine:
 
     def as_dict(self) -> dict[str, Any]:
         values = list(self.steps.values())
-        return {"registry_version": self.registry_version, "status": "failed" if any(s.status == "failed" for s in values) else "waiting_for_user" if any(s.status == "waiting_for_user" for s in values) else "completed" if values and all(s.status == "completed" for s in values) else "running", "steps": [step.as_dict() for step in values], "ready_steps": [step.step_id for step in self.ready()]}
+        status = (
+            "failed" if any(step.status == "failed" for step in values)
+            else "waiting_for_user" if any(step.status == "waiting_for_user" for step in values)
+            else "completed" if not values or all(step.status == "completed" for step in values)
+            else "running"
+        )
+        return {"status": status, "steps": [step.as_dict() for step in values], "ready_steps": [step.step_id for step in self.ready()]}

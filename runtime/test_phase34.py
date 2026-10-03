@@ -56,7 +56,7 @@ def test_store_persists_task_evidence_and_checkpoints(tmp_path):
 
 
 def test_task_evidence_endpoint_exposes_persisted_contract(tmp_path, monkeypatch):
-    install_fake_controller(monkeypatch, capability_ids=[1])
+    install_fake_controller(monkeypatch, handlers=["qwen_coder"])
     client = TestClient(create_app(tmp_path, check_llm=False))
     client.app.state.orchestrator.start = lambda task: None
     project = client.post("/api/projects", json={"name": "evidence-api"}).json()

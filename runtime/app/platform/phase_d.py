@@ -1,7 +1,7 @@
 """Phase D platform primitives.
 
 This module deliberately keeps Phase D declarative and local-first:
-- capability profiles describe what a model can do; they do not load models;
+- model profiles describe what a model can do; they do not load models;
 - plugins are signed/declared manifests, never arbitrary code execution;
 - project policies and memberships are enforced at the API boundary;
 - trajectory evaluation is deterministic and auditable.
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-BUILTIN_CAPABILITIES: dict[str, dict[str, Any]] = {
+BUILTIN_MODEL_PROFILES: dict[str, dict[str, Any]] = {
     "qwen2.5-coder:7b": {
         "provider": "ollama", "vision": False, "tools": True, "coding": True,
         "reasoning": "moderate", "planning": False, "research": "limited",
@@ -38,19 +38,6 @@ BUILTIN_CAPABILITIES: dict[str, dict[str, Any]] = {
         "reasoning": "moderate", "planning": False, "research": False,
         "creativity": "strong", "design": "strong",
     },
-}
-
-CAPABILITY_OWNERS: dict[str, str] = {
-    "reasoning": "deepseek",
-    "software_engineering": "qwen_coder",
-    "github": "qwen_coder",
-    "image_analysis": "gemma3",
-    "research": "qwen2.5_3b",
-    "creativity": "llama3.2_3b",
-    "beautiful_design": "llama3.2_3b",
-    "user_action": "user",
-    "protected_operation": "platform",
-    "unassigned": "deepseek",
 }
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -75,9 +62,9 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def capability_registry() -> list[dict[str, Any]]:
-    """Return built-ins plus configured model profiles without exposing keys."""
-    profiles = {name: {**value, "model": name, "source": "builtin"} for name, value in BUILTIN_CAPABILITIES.items()}
+def configured_model_profiles() -> list[dict[str, Any]]:
+    """Return configured model metadata for status display; not used for task planning."""
+    profiles = {name: {**value, "model": name, "source": "builtin"} for name, value in BUILTIN_MODEL_PROFILES.items()}
     for env_name, role in (("LOCAL_LLM_MODEL", "local"), ("VISION_LLM_MODEL", "vision"), ("HEAVY_CODING_LLM_MODEL", "heavy_coding"), ("REASONING_LLM_MODEL", "reasoning"), ("RESEARCH_LLM_MODEL", "research"), ("CREATIVITY_LLM_MODEL", "creativity")):
         model = os.environ.get(env_name, "").strip()
         if model and model not in profiles:

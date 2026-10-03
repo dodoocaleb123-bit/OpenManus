@@ -21,8 +21,8 @@ def upload(client, project_id, filename, data=b"fake-image-bytes"):
     ).json()
 
 
-def test_deepseek_delegates_attached_image_to_vision_capability(tmp_path, monkeypatch):
-    calls = install_fake_controller(monkeypatch, capability_ids=[131])
+def test_deepseek_delegates_attached_image_to_vision_model(tmp_path, monkeypatch):
+    calls = install_fake_controller(monkeypatch, handlers=["gemma3"])
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = make_project(client)
     image = upload(client, project["id"], "diagram.png")
@@ -36,14 +36,14 @@ def test_deepseek_delegates_attached_image_to_vision_capability(tmp_path, monkey
     assert calls[0]["context"]["current_attachments"][0]["filename"] == "diagram.png"
     assert image["id"] in response.json()["task"]["plan"]["attachment_ids"]
     steps = response.json()["task"]["plan"]["control_unit_plan"]["steps"]
-    assert {step["handler"] for step in steps} >= {"gemma3", "deepseek"}
+    assert {step["handler"] for step in steps} == {"gemma3"}
 
 
 def test_old_image_is_not_reattached_by_prompt_keywords_or_filename(tmp_path, monkeypatch):
     def choose(prompt, context):
         if any(item["filename"] == "diagram.png" for item in context.get("current_attachments", [])):
-            return [131]
-        return [167]
+            return ["gemma3"]
+        return []
 
     calls = install_fake_controller(monkeypatch, selector=choose)
     client = TestClient(create_app(tmp_path, check_llm=False))
@@ -74,7 +74,7 @@ def test_old_image_is_not_reattached_by_prompt_keywords_or_filename(tmp_path, mo
 
 
 def test_multiple_current_images_and_question_reach_deepseek_as_one_workflow(tmp_path, monkeypatch):
-    calls = install_fake_controller(monkeypatch, capability_ids=[131])
+    calls = install_fake_controller(monkeypatch, handlers=["gemma3"])
     client = TestClient(create_app(tmp_path, check_llm=False))
     project = make_project(client)
     first = upload(client, project["id"], "equation.png", b"first")
@@ -90,7 +90,7 @@ def test_multiple_current_images_and_question_reach_deepseek_as_one_workflow(tmp
     assert {item["filename"] for item in calls[0]["context"]["current_attachments"]} == {"equation.png", "diagram.png"}
     assert response.json()["task"]["plan"]["attachment_ids"] == [second["id"], first["id"]]
     handlers = {step["handler"] for step in response.json()["task"]["plan"]["control_unit_plan"]["steps"]}
-    assert {"gemma3", "deepseek"}.issubset(handlers)
+    assert handlers == {"gemma3"}
 
 
 def test_chat_planner_returns_actionable_rate_limit_error(tmp_path, monkeypatch):

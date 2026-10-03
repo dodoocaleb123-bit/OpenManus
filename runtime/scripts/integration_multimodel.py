@@ -24,11 +24,6 @@ def get(path: str) -> dict:
 health = get("/api/health")
 if health.get("status") != "ok":
     raise SystemExit(f"health failed: {health}")
-registry = get("/api/capabilities/registry")
-if registry.get("count") != 400:
-    raise SystemExit(f"registry count failed: {registry.get('count')}")
-if registry.get("schema_version") != "1.2.0" or not all("input_schema" in item and "output_schema" in item for item in registry.get("capabilities", [])):
-    raise SystemExit("registry schema contract failed")
 roles = get("/api/capabilities/models/status").get("models", [])
 seen = {item.get("role") for item in roles}
 if seen != EXPECTED:
@@ -40,5 +35,5 @@ health_roles = get("/api/capabilities/models/health").get("models", [])
 failed = [item for item in health_roles if not item.get("reachable") or not item.get("model_present")]
 if failed:
     raise SystemExit("model health failed: " + ", ".join(f"{item.get('role')}:{item.get('error')}" for item in failed))
-print(json.dumps({"health": health, "registry_count": registry["count"], "roles": sorted(seen), "health_checks": len(health_roles)}, indent=2))
+print(json.dumps({"health": health, "roles": sorted(seen), "health_checks": len(health_roles), "planner": "DeepSeek-first, registry-free"}, indent=2))
 print("OpenManus multi-model integration contract: PASS")

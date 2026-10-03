@@ -7,12 +7,12 @@ from app.platform.control_unit import ControlUnit
 from app.platform.reasoning import _normalise_plan, _normalise_review
 
 
-def test_control_unit_requires_explicit_capability_ids_without_fallback():
-    with pytest.raises(ValueError, match="explicitly select"):
-        ControlUnit().plan_from_capability_ids("anything", [])
-    plan = ControlUnit().plan_from_capability_ids("Explain the repository", [168])
-    assert plan["selected_capabilities"]
-    assert plan["request_type"] == "deepseek_selected_workflow"
+def test_control_unit_accepts_model_authored_steps_and_direct_answers():
+    with pytest.raises(ValueError, match="needs a clear objective"):
+        ControlUnit().build_workflow("anything", [{"step_id": "x", "handler": "qwen_coder", "tools": ["bash"]}])
+    plan = ControlUnit().build_workflow("Explain the repository", [])
+    assert plan["authoritative"] is True
+    assert plan["request_type"] == "deepseek_authored_workflow"
 
 
 def test_reasoning_plan_and_review_are_bounded_and_schema_stable():

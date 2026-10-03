@@ -1,6 +1,6 @@
 # OpenManus multi-model Ollama deployment
 
-OpenManus now uses a versioned registry of all 400 capabilities. DeepSeek is the control unit for planning and conversational routing; platform services remain authoritative for tools, persistence, evidence, and protected actions.
+OpenManus uses a DeepSeek-first, registry-free planner. DeepSeek receives descriptive model-role and OpenManus tool information for every valid user message and chooses an optional ordered workflow. Platform services remain authoritative for available adapters, persistence, evidence, project permissions, and protected actions.
 
 ## Roles
 
@@ -14,11 +14,11 @@ OpenManus now uses a versioned registry of all 400 capabilities. DeepSeek is the
 
 All five profiles use the same Ollama OpenAI-compatible endpoint by default. Copy `.env.example` to `.env` and change model tags to match `ollama list`.
 
-The typed role definitions live in `app/platform/model_profiles.py`. Every registry record also carries input/output schemas and supporting-handler metadata. DeepSeek performs a control-unit preflight for direct conversation, while image replies remain on Gemma so image bytes reach a vision-capable model.
+The typed role descriptions live in `app/platform/model_profiles.py` and the planner prompt describes the actual local models and OpenManus tools in plain language. DeepSeek is the first and final reasoning model for each message; it can answer directly or delegate specialist work. Image analysis is assigned to Gemma when DeepSeek chooses that role and the request includes suitable image input.
 
 ## CPU and memory policy
 
-The default is one active model at a time (`PLATFORM_MAX_MODEL_CONCURRENCY=1`). Do not enable parallel specialist execution until the laptop has been tested for peak RAM, model unload time, and preview responsiveness. The platform records model role status at `/api/capabilities/models/status` and the complete capability map at `/api/capabilities/registry`.
+The default is one active model at a time (`PLATFORM_MAX_MODEL_CONCURRENCY=1`). Do not enable parallel specialist execution until the laptop has been tested for peak RAM, model unload time, and preview responsiveness. The platform records model role status at `/api/capabilities/models/status`; this informational status does not constrain DeepSeek to a task catalogue.
 
 ## Docker Desktop on Windows
 
@@ -37,7 +37,7 @@ docker run -d --name openmanus --restart unless-stopped `
   openmanus-platform
 ```
 
-Before starting, run `ollama list` and confirm all configured tags exist. Keep `.env` outside Git tracking. Open `http://127.0.0.1:8000` and check `/api/health`, `/api/capabilities/models/status`, and `/api/capabilities/registry`.
+Before starting, run `ollama list` and confirm all configured tags exist. Keep `.env` outside Git tracking. Open `http://127.0.0.1:8000` and check `/api/health` and `/api/capabilities/models/status`.
 
 After the container starts, run the redacted contract check from `runtime`:
 

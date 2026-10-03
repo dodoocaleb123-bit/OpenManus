@@ -1,4 +1,12 @@
-# Multi-model capability update
+# Multi-model and workflow changes
+
+## Registry-free DeepSeek planning / 2026-10-03
+
+- Removed the numbered `capabilities.json` task catalogue, its loader/validator module, and the `/api/capabilities/registry` endpoint.
+- DeepSeek receives the exact valid user message plus descriptive local model-role and available-tool information and authors an optional ordered workflow with objectives, dependencies, and tools.
+- Direct answers use an empty specialist workflow; DeepSeek still streams the final response. Combined research/design/build/user-action flows remain supported through selected specialists.
+- The platform retains structural validation, model/tool availability checks, project permissions, protected-action approval, and execution evidence. These are not request-type classifiers.
+- Updated UI, integration script, documentation, and tests to display descriptive step objectives and handler/tool names rather than registry IDs.
 
 ## Final completion pass / 2026-10-01
 

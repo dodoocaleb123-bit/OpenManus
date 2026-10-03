@@ -26,7 +26,7 @@ def test_every_project_message_creates_a_task_and_is_sent_verbatim_to_deepseek(t
     assert first_payload["task"]["prompt"] == first_text
     assert controller_calls[0]["prompt"] == first_text
     assert "route" not in first_payload["plan"]
-    assert 167 in first_payload["task"]["plan"]["control_unit_plan"]["selected_capabilities"]
+    assert first_payload["task"]["plan"]["control_unit_plan"]["steps"] == []
     assert first_payload["assistant"]["content"]
 
     second_text = "What did I say?"
@@ -64,9 +64,7 @@ def test_greeting_uses_deepseek_capability_plan_then_becomes_a_task(tmp_path, mo
         async def ask(self, messages, system_msgs=None, stream=False, **kwargs):
             self.calls.append((messages, system_msgs, kwargs))
             system = system_msgs[0]["content"]
-            if "Executable capability directory" in system:
-                return '{"summary":"Greet the user","intent":"greeting","capability_ids":[167],"excluded_capabilities":[],"requires_confirmation":false,"rationale":[]}'
-            return '{"summary":"Respond to the greeting","intent":"greeting","needs_workspace_context":false,"handlers":["deepseek"],"rationale":[]}'
+            return '{"summary":"Respond to the greeting","intent":"greeting","needs_workspace_context":false,"workflow":[],"requires_confirmation":false,"rationale":[]}'
 
     monkeypatch.setattr("app.api.routes.LLM", DeepSeekGreeting)
     client = TestClient(create_app(tmp_path, check_llm=False))
@@ -78,10 +76,12 @@ def test_greeting_uses_deepseek_capability_plan_then_becomes_a_task(tmp_path, mo
     assert payload["kind"] == "task"
     assert payload["task"]["prompt"] == "Hellooo"
     assert "route" not in payload["plan"]
-    assert payload["plan"]["control_unit_plan"]["selected_capabilities"] == [167]
-    assert len(DeepSeekGreeting.calls) == 2
+    assert payload["plan"]["control_unit_plan"]["steps"] == []
+    assert len(DeepSeekGreeting.calls) == 1
     assert all(messages == [{"role": "user", "content": "Hellooo"}] for messages, _, _ in DeepSeekGreeting.calls)
-    assert "Executable capability directory" not in DeepSeekGreeting.calls[0][1][0]["content"]
+    planner_context = DeepSeekGreeting.calls[0][1][0]["content"]
+    assert "MODEL AND TOOL DESCRIPTIONS" in planner_context
+    assert "Executable capability directory" not in planner_context
     assert len(started) == 1
 
 
@@ -144,7 +144,7 @@ def test_project_chat_workspace_context_is_a_deepseek_plan_choice(tmp_path, monk
 
 
 def test_deepseek_plan_can_combine_answer_and_project_execution(tmp_path, monkeypatch):
-    client, calls, started = _client(tmp_path, monkeypatch, capability_ids=[1])
+    client, calls, started = _client(tmp_path, monkeypatch, handlers=["qwen_coder"])
     project = client.post("/api/projects", json={"name": "unified"}).json()
     text = "Please update the project README with setup instructions, then explain what changed."
     response = client.post(f"/api/projects/{project['id']}/chat", json={"message": text})
@@ -154,26 +154,26 @@ def test_deepseek_plan_can_combine_answer_and_project_execution(tmp_path, monkey
     assert payload["kind"] == "task"
     assert "route" not in payload["plan"]
     steps = payload["task"]["plan"]["control_unit_plan"]["steps"]
-    assert {step["handler"] for step in steps} >= {"deepseek", "qwen_coder"}
-    assert any(step["handler"] == "deepseek" and step["capability_id"] == 167 for step in steps)
+    assert {step["handler"] for step in steps} == {"qwen_coder"}
+    assert steps[0]["tools"]
     assert payload["task"]["prompt"] == text
     assert started and started[0].id == payload["task"]["id"]
 
 
 def test_research_and_final_answer_are_one_task_workflow(tmp_path, monkeypatch):
-    client, calls, _ = _client(tmp_path, monkeypatch, capability_ids=[147])
+    client, calls, _ = _client(tmp_path, monkeypatch, handlers=["qwen2.5_3b"])
     project = client.post("/api/projects", json={"name": "browser-research"}).json()
     text = "Go through this website and tell me what is in there https://example.com"
     response = client.post(f"/api/projects/{project['id']}/chat", json={"message": text})
     assert response.status_code == 200
     assert calls[0]["prompt"] == text
     plan = response.json()["task"]["plan"]["control_unit_plan"]
-    assert {step["handler"] for step in plan["steps"]} >= {"qwen2.5_3b", "deepseek"}
+    assert {step["handler"] for step in plan["steps"]} == {"qwen2.5_3b"}
     assert response.json()["task"]["prompt"] == text
 
 
-def test_capability_question_is_still_a_deepseek_selected_task(tmp_path, monkeypatch):
-    client, calls, _ = _client(tmp_path, monkeypatch, capability_ids=[167])
+def test_direct_question_is_still_a_deepseek_planned_task(tmp_path, monkeypatch):
+    client, calls, _ = _client(tmp_path, monkeypatch)
     project = client.post("/api/projects", json={"name": "browse"}).json()
     text = "Can you browse on the internet?"
     response = client.post(f"/api/projects/{project['id']}/chat", json={"message": text})

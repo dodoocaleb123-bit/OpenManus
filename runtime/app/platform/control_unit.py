@@ -1,59 +1,105 @@
-"""Registry-backed validation of DeepSeek-selected capability plans."""
+"""Validation and dependency ordering for DeepSeek-authored workflows.
+
+This module deliberately contains no task catalog or numbered capability registry.
+DeepSeek chooses model handlers, objectives, tool use, and dependencies from
+human-readable model and tool descriptions; the platform validates that the
+chosen adapters are real and that the workflow is executable.
+"""
 from __future__ import annotations
+
+import re
 from typing import Any
-from app.platform.capability_registry import get_capability, registry_version, validate_plan
+
 from app.platform.handoffs import order_steps
 
+WORKFLOW_HANDLERS = frozenset({"qwen_coder", "gemma3", "qwen2.5_3b", "llama3.2_3b", "user"})
+WORKFLOW_TOOLS = frozenset({
+    "bash", "python_execute", "str_replace_editor", "web_search",
+    "platform_browser", "platform_git", "ask_human", "terminate",
+})
+GITHUB_ACTIONS = frozenset({
+    "connect", "status", "diff", "log", "init", "create_branch", "checkout",
+    "commit", "push", "create_pull_request", "publish_repository",
+})
+_STEP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
 class ControlUnit:
-    """Builds executable plans; model output can choose IDs, platform owns execution."""
-    def plan_from_capability_ids(self, request: str, capability_ids: list[int], *, attachment_ids: list[str] | None = None, browser_session_id: str | None = None, excluded_capabilities: list[int] | None = None, controller: str = "deepseek", planner_status: str = "authoritative") -> dict[str, Any]:
-        selected: list[int] = []
-        excluded = {int(item) for item in (excluded_capabilities or [])}
-        def add(cid: int) -> None:
-            cid = int(cid)
-            if cid in excluded or cid in selected: return
-            get_capability(cid)
-            selected.append(cid)
-        def add_with_dependencies(cid: int) -> None:
-            record = get_capability(int(cid))
-            for dependency in record.get("dependencies", []): add_with_dependencies(int(dependency))
-            add(int(cid))
-        for cid in capability_ids: add_with_dependencies(int(cid))
-        if not selected:
-            raise ValueError("DeepSeek must explicitly select at least one capability")
-        step_for = {cid: f"step-{index}" for index, cid in enumerate(selected, 1)}
-        steps: list[dict[str, Any]] = []
-        for position, cid in enumerate(selected):
-            record = get_capability(cid)
-            dependencies = [step_for[int(dep)] for dep in record.get("dependencies", []) if int(dep) in step_for]
-            prior = selected[:position]
-            if record["handler"] == "qwen_coder":
-                # Qwen must receive every earlier selected user/specialist
-                # handoff. Later user actions remain true post-coding pauses.
-                dependencies.extend(
-                    step_for[item] for item in prior
-                    if (get_capability(item)["handler"] in {"qwen2.5_3b", "llama3.2_3b", "user"})
-                    or (get_capability(item)["handler"] == "gemma3" and item not in {132, 133})
-                )
-            elif record["handler"] == "llama3.2_3b":
-                dependencies.extend(
-                    step_for[item] for item in prior
-                    if (get_capability(item)["handler"] == "qwen2.5_3b")
-                    or (get_capability(item)["handler"] == "gemma3" and item not in {132, 133})
-                )
-            elif record["handler"] == "user":
-                # A user action placed after a specialist is not merely a
-                # preflight gate: it must pause only after earlier work ends.
-                dependencies.extend(
-                    step_for[item] for item in prior
-                    if get_capability(item)["handler"] in {"qwen_coder", "qwen2.5_3b", "llama3.2_3b", "gemma3"}
-                )
-            elif record["handler"] == "deepseek" and cid in set(range(167, 174)):
-                # DeepSeek's user-facing answer is part of the same workflow,
-                # and must be based on every selected execution/handoff result.
-                dependencies.extend(
-                    step_for[item] for item in selected
-                    if get_capability(item)["handler"] not in {"deepseek", "platform"}
-                )
-            steps.append({"step_id": step_for[cid], "capability_id": cid, "handler": record["handler"], "supporting_handlers": record["supporting_handlers"], "tools": record["tools"], "depends_on": list(dict.fromkeys(dependencies)), "input": {"user_request": request, "attachment_ids": attachment_ids or [], "dependency_outputs": {}}, "input_schema": record["input_schema"], "output_schema": record["output_schema"], "verification": record["verification"], "requires_user": record["requires_user"], "platform_only": record["platform_only"], "requires_confirmation": record["requires_confirmation"], "failure_policy": record["failure_policy"]})
-        return validate_plan({"schema_version": "1.2.0", "registry_version": registry_version(), "request_type": "deepseek_selected_workflow", "selected_capabilities": selected, "excluded_capabilities": sorted(excluded), "steps": order_steps(steps), "attachment_ids": attachment_ids or [], "browser_session_id": browser_session_id, "controller": controller, "planner_status": planner_status, "authoritative": controller == "deepseek" and planner_status == "authoritative", "evidence_required": True})
+    """Validate a structured workflow without deciding what the user meant."""
+
+    def build_workflow(
+        self,
+        request: str,
+        steps: list[dict[str, Any]],
+        *,
+        attachment_ids: list[str] | None = None,
+        browser_session_id: str | None = None,
+        controller: str = "deepseek",
+        planner_status: str = "authoritative",
+    ) -> dict[str, Any]:
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(steps):
+            if not isinstance(raw, dict):
+                raise ValueError(f"Workflow step {index + 1} must be an object")
+            step_id = str(raw.get("step_id") or "").strip()
+            handler = str(raw.get("handler") or "").strip()
+            objective = str(raw.get("objective") or "").strip()
+            if not _STEP_ID.fullmatch(step_id):
+                raise ValueError(f"Workflow step {index + 1} needs a valid step_id")
+            if handler not in WORKFLOW_HANDLERS:
+                raise ValueError(f"DeepSeek selected an unavailable workflow handler: {handler or '(empty)'}")
+            if not objective:
+                raise ValueError(f"Workflow step {step_id} needs a clear objective")
+            depends_on = raw.get("depends_on", [])
+            if not isinstance(depends_on, list) or any(not isinstance(dep, str) for dep in depends_on):
+                raise ValueError(f"Workflow step {step_id} depends_on must be an array of step IDs")
+            tools = raw.get("tools", [])
+            if not isinstance(tools, list) or any(not isinstance(tool, str) for tool in tools):
+                raise ValueError(f"Workflow step {step_id} tools must be an array of tool names")
+            unknown_tools = sorted(set(tools) - WORKFLOW_TOOLS)
+            if unknown_tools:
+                raise ValueError(f"Workflow step {step_id} selected unavailable tool(s): " + ", ".join(unknown_tools))
+            if handler == "qwen_coder" and not tools:
+                raise ValueError(f"Coding step {step_id} must explicitly select the OpenManus tools it needs")
+            if handler == "qwen2.5_3b" and not {"web_search", "platform_browser"}.intersection(tools):
+                raise ValueError(f"Research step {step_id} must explicitly select web_search or platform_browser")
+            git_actions = raw.get("git_actions", [])
+            if not isinstance(git_actions, list) or any(not isinstance(action, str) for action in git_actions):
+                raise ValueError(f"Workflow step {step_id} git_actions must be an array")
+            unknown_actions = sorted(set(git_actions) - GITHUB_ACTIONS)
+            if unknown_actions:
+                raise ValueError(f"Workflow step {step_id} selected unknown GitHub action(s): " + ", ".join(unknown_actions))
+            if git_actions and "platform_git" not in tools:
+                raise ValueError(f"Workflow step {step_id} requested GitHub actions without selecting platform_git")
+            requires_confirmation = raw.get("requires_confirmation", False)
+            if not isinstance(requires_confirmation, bool):
+                raise ValueError(f"Workflow step {step_id} requires_confirmation must be a boolean")
+            normalized.append({
+                "step_id": step_id,
+                "handler": handler,
+                "objective": objective[:2000],
+                "depends_on": list(dict.fromkeys(depends_on)),
+                "tools": list(dict.fromkeys(tools)),
+                "git_actions": list(dict.fromkeys(git_actions)),
+                "requires_confirmation": requires_confirmation,
+            })
+        ordered = order_steps(normalized)
+        if sum(step["handler"] == "user" for step in ordered) > 3:
+            raise ValueError("A workflow may request at most three separate user actions")
+        ids = {step["step_id"] for step in ordered}
+        if any(step["step_id"] in step["depends_on"] for step in ordered):
+            raise ValueError("A workflow step cannot depend on itself")
+        if any(dep not in ids for step in ordered for dep in step["depends_on"]):
+            raise ValueError("Workflow contains a dependency on an unknown step")
+        return {
+            "workflow_version": "2.0",
+            "request_type": "deepseek_authored_workflow",
+            "steps": ordered,
+            "attachment_ids": list(dict.fromkeys(attachment_ids or [])),
+            "browser_session_id": browser_session_id,
+            "controller": controller,
+            "planner_status": planner_status,
+            "authoritative": controller == "deepseek" and planner_status == "authoritative",
+            "evidence_required": True,
+            "user_request": request,
+        }

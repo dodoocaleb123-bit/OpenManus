@@ -445,7 +445,7 @@ async function copyReply(text,button){
  }catch(e){button.textContent='Copy failed';button.title='Clipboard access was blocked by the browser'}
  setTimeout(()=>{button.textContent=original;button.disabled=false;button.classList.remove('copied');button.setAttribute('aria-label','Copy assistant reply');button.title='Copy this assistant reply'},1800)
 }
-function renderPlan(plan){if(!plan)return;const box=el('div','ev plan');const title=el('strong','',`Plan · ${plan.intent||'unified assistant'}`);box.append(title);if(plan.capabilities?.length)box.append(el('div','muted','Capabilities: '+plan.capabilities.join(' · ')));(plan.steps||[]).forEach((step,i)=>box.append(el('div','plan-step',`${i+1}. ${step}`)));$('feed').append(box)}
+function renderPlan(plan){if(!plan)return;const box=el('div','ev plan');const title=el('strong','',`DeepSeek plan · ${plan.intent||'unified workflow'}`);box.append(title);const steps=plan.workflow||plan.control_unit_plan?.steps||[];if(steps.length){steps.forEach((step,i)=>{const objective=step.objective||step.step_id||`Step ${i+1}`;const tools=(step.tools||[]).length?` · tools: ${step.tools.join(', ')}`:'';box.append(el('div','plan-step',`${i+1}. ${objective} → ${step.handler||'DeepSeek'}${tools}`))})}else if(plan.steps?.length){plan.steps.forEach((step,i)=>box.append(el('div','plan-step',`${i+1}. ${step}`)))}else box.append(el('div','muted','DeepSeek will answer directly; no specialist or tool steps were needed.'));$('feed').append(box)}
 async function showTask(taskOrId,historical=true){
 if(!selected)return;
 const taskId=typeof taskOrId==='string'?taskOrId:taskOrId?.id;if(!taskId)return;
@@ -503,8 +503,8 @@ function activityLabel(ev){
  const d=ev?.data||{};switch(ev?.type){
   case 'task.planned':return 'Plan ready — starting the task';
   case 'execution.state':return 'DeepSeek control unit initialized';
-  case 'handoff.started':return `${d.handler||'Specialist'} received capability ${d.step?.capability_id||''}`;
-  case 'handoff.completed':return `${d.handoff?.handler||'Specialist'} completed capability ${d.handoff?.capability_id||''}`;
+  case 'handoff.started':return `${d.handler||'Specialist'} started: ${d.step?.objective||'assigned work'}`;
+  case 'handoff.completed':return `${d.handoff?.handler||'Specialist'} completed: ${d.handoff?.objective||'assigned work'}`;
   case 'user_action.required':return 'Waiting for your action';
   case 'user_action.acknowledged':return 'Your reply was received; continuing';
   case 'user_action.verified':return 'Your action was verified; continuing';
@@ -532,8 +532,8 @@ function render(ev){lastEventId=ev.id;const f=$('feed');const stick=f.scrollHeig
 switch(ev.type){
 case 'task.planned':renderPlan(d.plan);node=el('div','ev sys','Plan created; execution is starting.');break;
 case 'execution.state':node=el('div','ev thought','🧭 DeepSeek control-unit state machine initialized');node.append(detailsBox('Execution state',JSON.stringify(d.state||{},null,2)));break;
-case 'handoff.started':node=el('div','ev thought',`↗ ${d.handler||'Specialist'} received capability ${d.step?.capability_id||''}`);node.append(detailsBox('Step',JSON.stringify(d.step||{},null,2)));break;
-case 'handoff.completed':node=el('div','ev good',`✓ ${d.handoff?.handler||'Specialist'} completed capability ${d.handoff?.capability_id||''}`);node.append(detailsBox('Handoff provenance',JSON.stringify(d.handoff||{},null,2)));break;
+case 'handoff.started':node=el('div','ev thought',`↗ ${d.handler||'Specialist'} started: ${d.step?.objective||'assigned work'}`);node.append(detailsBox('Step',JSON.stringify(d.step||{},null,2)));break;
+case 'handoff.completed':node=el('div','ev good',`✓ ${d.handoff?.handler||'Specialist'} completed: ${d.handoff?.objective||'assigned work'}`);node.append(detailsBox('Handoff provenance',JSON.stringify(d.handoff||{},null,2)));break;
 case 'user_action.required':node=el('div','ev question','⏸ '+ev.message);node.append(detailsBox('Required action',JSON.stringify(d||{},null,2)));showQuestion(ev.message);break;
 case 'user_action.acknowledged':node=el('div','ev good','▶ Your reply was received; continuing (external action not independently verified)');break;
 case 'user_action.verified':node=el('div','ev good','▶ User action verified; resuming from checkpoint');break;

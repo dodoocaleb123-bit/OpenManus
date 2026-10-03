@@ -15,22 +15,24 @@ common AMS constructs. MathJax is loaded by the web client; if the CDN is
 unavailable, the original formula text remains visible as a fallback.
 
 Each project has one persistent composer; there is no conversation/task or
-answer/build mode selector. Every accepted message is passed unchanged to
-DeepSeek, which selects the required model handlers and then the exact ordered
-capability IDs. Every accepted message becomes a persisted task workflow,
-including greetings and ordinary questions. Answering is a DeepSeek capability
-within that workflow, not a separate response route; multi-step requests can
-combine research, vision, design, coding, user actions, and a final DeepSeek
-synthesis.
+answer/build mode selector. Every valid, non-empty user message that passes API
+authentication, project access, and attachment-ownership checks is passed
+verbatim to DeepSeek before any model/tool workflow decision. There is no
+keyword classifier, intent gate, or numbered task catalogue. Each message
+creates a persisted task, including greetings and ordinary questions. DeepSeek
+can answer directly with an empty specialist workflow, delegate selected steps
+to local model roles/tools, pause for a user action, or combine implementation
+with a final synthesized answer.
 
-The control unit first identifies the necessary handler roles, then DeepSeek
-selects from the executable capability directory for those roles. The platform
-validates IDs, dependencies, model availability, authorization, and evidence
-requirements after the model's decision; these checks do not classify the
-request. On local Ollama, JSON mode is requested and DeepSeek retries once with
-a larger output budget if the response is only reasoning or malformed JSON.
-There is no keyword classifier or substitute model. Only when DeepSeek asks
-for workspace context does the server add bounded local file excerpts.
+DeepSeek receives human-readable descriptions of the configured model roles
+and available OpenManus tools, then returns ordered workflow steps with
+objectives, dependencies, and selected tools. The platform validates only the
+workflow structure, configured adapters, project permissions, protected-action
+approvals, and evidence after DeepSeek's decision; it does not decide what kind
+of request the user made. On local Ollama, JSON mode is requested and DeepSeek
+retries once with a larger output budget if the response is only reasoning or
+malformed JSON. If DeepSeek asks for workspace context, the server adds bounded
+local file excerpts.
 Secret-like filenames, generated directories, and oversized content are
 excluded. A per-project Memory pane stores up to 6,000 characters in local
 SQLite; credentials are rejected and both memory and files are treated as
@@ -39,10 +41,10 @@ untrusted reference data, not instructions.
 The paperclip button is in the lower-left of the composer. Selected uploads
 appear as attachment chips and are included in the same DeepSeek-first message.
 DeepSeek may assign image analysis to Gemma; project code, terminal, and preview
-work goes to the configured Qwen Coder role. During active tasks, follow-up
-messages also go through DeepSeek, which decides whether to answer conversationally
-or continue the active workflow. Declared user-action capabilities pause the task
-and resume only after the user replies.
+work can go to the configured Qwen Coder role. During active tasks, follow-up
+messages also go through DeepSeek, which decides whether the message needs an
+answer, a continuation of the active workflow, or both. User-action workflow
+steps pause and resume after the user replies.
 
 ## How a build task runs (v0.7)
 
@@ -248,14 +250,14 @@ page are faked; git operations run against local bare repositories.
 - DeepSeek is required for new chat and task-routing requests. Set
   `REASONING_LLM_MODEL` and `REASONING_LLM_ENABLED=true` to enable it. There is
   deliberately no regex/keyword fallback when that local model is unavailable.
-- DeepSeek chooses the workflow; capability IDs, owning handlers, dependencies,
-  local model availability, and permission gates are validated deterministically
-  before execution. This deterministic validation is not an intent classifier
-  and cannot change the selected route into a different one.
-- `capabilities.json` is a routing/validation catalog, not 400 separately
-  implemented plugins. Only capabilities connected to an existing handler and
-  tool have executable behavior; unsupported or uncompleted capabilities must
-  fail visibly rather than being reported as complete.
+- DeepSeek chooses model handlers, tools, objectives, and dependencies from
+  descriptions in its prompt. The platform has no numbered task catalogue or
+  registry-based planner; it validates only descriptive step structure and
+  actual runtime adapters/permissions after the model decides.
+- Unsupported tools, unavailable model roles, uncompleted steps, and missing
+evidence must fail visibly rather than being reported as complete. Model-status
+and plugin metadata endpoints are informational/runtime support surfaces and
+are not consulted as a task-selection catalogue by DeepSeek.
 - Workspace shell commands are classified as `safe`, `confirmation`, or `blocked`.
   Dependency installs, recursive deletion, privileged operations, and external Git
   changes require human approval. Remote scripts piped into a shell and direct
